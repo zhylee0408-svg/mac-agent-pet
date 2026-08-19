@@ -1,0 +1,11 @@
+#!/bin/zsh
+set -euo pipefail
+
+DISCIPLINE_APP="$HOME/Library/Application Support/Discipline/Discipline.app"
+
+if [[ ! -d "$DISCIPLINE_APP" ]]; then
+  print -u2 "Discipline is not installed at: $DISCIPLINE_APP"
+  exit 1
+fi
+
+/usr/bin/open -g "$DISCIPLINE_APP"
