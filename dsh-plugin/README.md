@@ -48,3 +48,6 @@ npx -y @deepseek-ai/dsh web
 - `blocked`：`turn/end` 的 error/aborted/interrupted/halted/failed/rejected/blocked/cancelled/max-tokens，
   **粘住**：不因时间过期，直到恢复事件（同会话新 `turn/start`、`approval/asked` 或新 `session`）才切换。
 - 插件 mjs 是代码，补丁 yml 只负责挂载并传 `config`（重启 DSH 生效）；改 yml 的值不会改写 mjs。
+- **停机标记**：插件监听 `SIGINT`/`SIGTERM`/`exit`，DSH 进程退出前同步把
+  `heartbeatAt` 置 0，桌宠下一次轮询（≤1 秒）即判定 DSH 离线并丢弃其状态——
+  因此 Ctrl+C 退出不会被显示成 blocked（点 Stop 时进程未死，blocked 照常显示）。

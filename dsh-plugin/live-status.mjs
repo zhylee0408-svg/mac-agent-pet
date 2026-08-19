@@ -23,6 +23,7 @@
 // Restart dsh afterwards (profile rows load at boot).
 
 import { writeFile, rename, mkdir } from "node:fs/promises";
+import { writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 
@@ -60,6 +61,30 @@ const ERROR_REASONS = new Set([
 function defaultStatusPath() {
   const home = process.env.DSH_HOME ?? join(homedir(), ".dsh");
   return join(home, "live-status.json");
+}
+
+// 停机标记：DSH 进程退出（SIGINT/SIGTERM/exit）前同步写入，把 heartbeatAt 置 0。
+// 桌宠下一次轮询即判定 DSH 离线并丢弃其最后状态——Ctrl+C 退出不会被显示成 blocked。
+// 注意：这是进程级「临终标记」，不区分 Stop/Ctrl+C 的事件——点 Stop 时进程没死，
+// 本函数不会触发，blocked 照常显示；Ctrl+C 时进程要死，本函数举手说「我没了」。
+function writeShutdownMarker(statusPath) {
+  try {
+    mkdirSync(dirname(statusPath), { recursive: true });
+    const marker = {
+      source: "dsh",
+      state: "idle",
+      detail: "DSH stopped",
+      diagnostic: "",
+      updatedAt: Date.now(),
+      heartbeatAt: 0, // 关键：0 → 桌宠判定心跳过期 → DSH 离线
+      sessions: []
+    };
+    const tmp = `${statusPath}.tmp`;
+    writeFileSync(tmp, JSON.stringify(marker, null, 2));
+    renameSync(tmp, statusPath);
+  } catch (err) {
+    /* 尽力而为：写失败不影响退出；桌宠会靠 30s 心跳过期兜底 */
+  }
 }
 
 function blankSession(id) {
@@ -233,7 +258,16 @@ export function apply(ctx, config) {
   ctx.on("session/event", onEvent);
   const timer = setInterval(scheduleWrite, HEARTBEAT_INTERVAL_MS);
 
+  // 进程退出信号 → 写停机标记（尽力而为；kill -9 捕获不到时靠桌宠侧 30s 心跳过期兜底）
+  const onShutdown = () => writeShutdownMarker(statusPath);
+  process.once("SIGINT", onShutdown);
+  process.once("SIGTERM", onShutdown);
+  process.once("exit", onShutdown);
+
   return () => {
     clearInterval(timer);
+    process.removeListener("SIGINT", onShutdown);
+    process.removeListener("SIGTERM", onShutdown);
+    process.removeListener("exit", onShutdown);
   };
 }
