@@ -30,6 +30,7 @@ struct SessionFileState {
     var pendingRequestID: String?
     var readyUntil: Date?
     var blocked = false   // 粘住：直到恢复事件才清除（对齐 DSH 语义）
+    var blockedAt: Date?  // 出错时间；兜底只在最近 30 分钟内把它视为有效 blocked
     var lastActivity = Date.distantPast
     var modificationDate = Date.distantPast
 }
@@ -71,6 +72,7 @@ enum RolloutEventParser {
             state.pendingRequestID = nil
             state.readyUntil = nil
             state.blocked = false
+            state.blockedAt = nil
             return
         }
 
@@ -88,6 +90,7 @@ enum RolloutEventParser {
             state.pendingRequestID = nil
             state.readyUntil = nil
             state.blocked = true   // 粘住：直到恢复事件
+            state.blockedAt = eventDate
             return
         }
 
@@ -104,6 +107,7 @@ enum RolloutEventParser {
                 ?? payload["id"] as? String
             state.readyUntil = nil
             state.blocked = false   // 批准请求 = 恢复活动
+            state.blockedAt = nil
             return
         }
 
@@ -123,6 +127,7 @@ enum RolloutEventParser {
                 ?? payload["requestId"] as? String
                 ?? payload["id"] as? String
             state.blocked = false   // 请求输入/批准 = 恢复活动
+            state.blockedAt = nil
             return
         }
 
@@ -155,7 +160,7 @@ enum RolloutEventParser {
             return (.needs, "A task needs input")
         }
 
-        if recentStates.contains(where: { $0.blocked }) {
+        if recentStates.contains(where: { $0.blocked && blockedRecent($0.blockedAt, now: now) }) {
             return (.blocked, "A task was blocked")
         }
 
@@ -183,18 +188,27 @@ enum RolloutEventParser {
         case "active":
             state.active = true
             state.blocked = false   // 恢复活动，清除粘住
+            state.blockedAt = nil
             state.needsInput = flags.contains("waitingOnApproval")
                 || flags.contains("waitingOnUserInput")
         case "systemError":
             state.active = false
             state.needsInput = false
             state.blocked = true   // 粘住：直到恢复事件
+            state.blockedAt = date
         case "idle", "notLoaded":
             state.active = false
             state.needsInput = false
         default:
             break
         }
+    }
+
+    /// 兜底的 blocked 只在出错后 30 分钟内有效：陈旧故障（如昨天出错的会话）不报红。
+    /// DSH 路径的粘住 blocked 由插件按会话实时跟踪，不受此窗口限制。
+    private static func blockedRecent(_ blockedAt: Date?, now: Date) -> Bool {
+        guard let blockedAt else { return false }
+        return now.timeIntervalSince(blockedAt) < 1_800
     }
 
     private static func parseDate(_ value: String?) -> Date? {
