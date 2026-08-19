@@ -1,0 +1,7 @@
+# Home-level user patch layer — 安装到 $DSH_HOME/cordis.patch.yml（默认 ~/.dsh/cordis.patch.yml）
+# 放在 profile 之外，profile 重新初始化也不会被清掉。
+- insert:
+    - id: live-status
+      name: 'file:///Users/zhylee/.dsh/plugins/live-status.mjs'
+      config:
+        readyWindowMs: 60000    # 绿色 ready 停留 60 秒（可改）；blocked 为粘住状态，无时长限制

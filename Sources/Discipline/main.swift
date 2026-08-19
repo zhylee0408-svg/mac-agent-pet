@@ -29,7 +29,7 @@ struct SessionFileState {
     var needsInput = false
     var pendingRequestID: String?
     var readyUntil: Date?
-    var blockedUntil: Date?
+    var blocked = false   // 粘住：直到恢复事件才清除（对齐 DSH 语义）
     var lastActivity = Date.distantPast
     var modificationDate = Date.distantPast
 }
@@ -70,7 +70,7 @@ enum RolloutEventParser {
             state.needsInput = false
             state.pendingRequestID = nil
             state.readyUntil = nil
-            state.blockedUntil = nil
+            state.blocked = false
             return
         }
 
@@ -78,7 +78,7 @@ enum RolloutEventParser {
             state.active = false
             state.needsInput = false
             state.pendingRequestID = nil
-            state.readyUntil = eventDate.addingTimeInterval(7)
+            state.readyUntil = eventDate.addingTimeInterval(60)
             return
         }
 
@@ -86,7 +86,8 @@ enum RolloutEventParser {
             state.active = false
             state.needsInput = false
             state.pendingRequestID = nil
-            state.blockedUntil = eventDate.addingTimeInterval(16)
+            state.readyUntil = nil
+            state.blocked = true   // 粘住：直到恢复事件
             return
         }
 
@@ -102,6 +103,7 @@ enum RolloutEventParser {
             state.pendingRequestID = payload["call_id"] as? String
                 ?? payload["id"] as? String
             state.readyUntil = nil
+            state.blocked = false   // 批准请求 = 恢复活动
             return
         }
 
@@ -120,6 +122,7 @@ enum RolloutEventParser {
             state.pendingRequestID = payload["call_id"] as? String
                 ?? payload["requestId"] as? String
                 ?? payload["id"] as? String
+            state.blocked = false   // 请求输入/批准 = 恢复活动
             return
         }
 
@@ -152,7 +155,7 @@ enum RolloutEventParser {
             return (.needs, "A task needs input")
         }
 
-        if recentStates.contains(where: { ($0.blockedUntil ?? .distantPast) > now }) {
+        if recentStates.contains(where: { $0.blocked }) {
             return (.blocked, "A task was blocked")
         }
 
@@ -179,12 +182,13 @@ enum RolloutEventParser {
         switch type {
         case "active":
             state.active = true
+            state.blocked = false   // 恢复活动，清除粘住
             state.needsInput = flags.contains("waitingOnApproval")
                 || flags.contains("waitingOnUserInput")
         case "systemError":
             state.active = false
             state.needsInput = false
-            state.blockedUntil = date.addingTimeInterval(16)
+            state.blocked = true   // 粘住：直到恢复事件
         case "idle", "notLoaded":
             state.active = false
             state.needsInput = false
@@ -1081,21 +1085,142 @@ final class PetPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+// MARK: - DSH live status (方案 A)
+// Reads $DSH_HOME/live-status.json written by the dsh-live-status plugin.
+// heartbeatAt 新鲜 = DSH 在线；updatedAt = 最近活动；state/detail/diagnostic 由插件聚合。
+
+struct DSHSessionRow: Decodable {
+    let id: String
+    let state: String
+    let stateAt: Double
+    let lastEventAt: Double
+    let turn: Int?
+    let pendingApproval: Bool?
+}
+
+struct DSHStatusPayload: Decodable {
+    let source: String?
+    let state: String
+    let detail: String
+    let diagnostic: String?
+    let updatedAt: Double?
+    let heartbeatAt: Double?
+    let sessions: [DSHSessionRow]?
+}
+
+struct DSHLiveSnapshot: Equatable {
+    let state: PetState
+    let detail: String
+    let diagnostic: String
+    let lastEventAt: Date
+    let heartbeatAt: Date
+}
+
+final class DSHStatusMonitor {
+    enum Status: Equatable {
+        case live(DSHLiveSnapshot)   // 文件新鲜，插件在线
+        case stale                    // 文件存在但心跳过期
+        case absent                   // 无状态文件
+    }
+
+    typealias Callback = (Status) -> Void
+
+    private let url: URL
+    private let callback: Callback
+    private let queue = DispatchQueue(label: "com.zhylee.discipline.dsh-status", qos: .utility)
+    private var timer: DispatchSourceTimer?
+    private var lastPublished: Status?
+    private let stalenessSeconds: TimeInterval = 30
+
+    init(callback: @escaping Callback) {
+        let home = ProcessInfo.processInfo.environment["DSH_HOME"]
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".dsh", isDirectory: true).path
+        url = URL(fileURLWithPath: home).appendingPathComponent("live-status.json")
+        self.callback = callback
+    }
+
+    func start() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.poll()
+            let timer = DispatchSource.makeTimerSource(queue: self.queue)
+            timer.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(200))
+            timer.setEventHandler { [weak self] in self?.poll() }
+            self.timer = timer
+            timer.resume()
+        }
+    }
+
+    func stop() {
+        queue.async { [weak self] in
+            self?.timer?.cancel()
+            self?.timer = nil
+        }
+    }
+
+    private func poll() {
+        guard let data = try? Data(contentsOf: url) else {
+            publish(.absent)
+            return
+        }
+        guard
+            let payload = try? JSONDecoder().decode(DSHStatusPayload.self, from: data),
+            let heartbeatMs = payload.heartbeatAt,
+            let updatedMs = payload.updatedAt
+        else {
+            publish(.absent)
+            return
+        }
+
+        let heartbeat = Date(timeIntervalSince1970: heartbeatMs / 1000)
+        let now = Date()
+        guard now.timeIntervalSince(heartbeat) < stalenessSeconds else {
+            publish(.stale)
+            return
+        }
+
+        let snapshot = DSHLiveSnapshot(
+            state: PetState(rawValue: payload.state) ?? .idle,
+            detail: payload.detail,
+            diagnostic: payload.diagnostic ?? "",
+            lastEventAt: Date(timeIntervalSince1970: updatedMs / 1000),
+            heartbeatAt: heartbeat
+        )
+        publish(.live(snapshot))
+    }
+
+    private func publish(_ status: Status) {
+        if status == lastPublished { return }
+        lastPublished = status
+        DispatchQueue.main.async { [callback] in callback(status) }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var panel: PetPanel!
     private var renderer: PetRenderer!
     private var monitor: SessionMonitor!
     private var ipcMonitor: CodexIPCStatusMonitor!
     private var statusItem: NSStatusItem!
+    private var sourceMenuItem: NSMenuItem!
     private var stateMenuItem: NSMenuItem!
     private var detailMenuItem: NSMenuItem!
     private var bridgeMenuItem: NSMenuItem!
     private var liveState: PetState = .idle
     private var liveDetail = "Starting status bridge…"
+    private var liveSource = "DSH"
+    private var liveBridge = "starting…"
     private var fallbackState: PetState = .idle
     private var fallbackDetail = "Starting session fallback…"
     private var runtimeSnapshot: LiveRuntimeSnapshot?
+    private var dshMonitor: DSHStatusMonitor!
+    private var dshStatus: DSHStatusMonitor.Status = .absent
+    private var codexDiagnostic = ""
+    private var codexLastActivityAt = Date.distantPast
     private var previewWorkItem: DispatchWorkItem?
+    private var dshLaunchInProgress = false
+    private var dshLaunchProcess: Process?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -1110,7 +1235,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 self?.receiveRuntimeSnapshot(snapshot)
             },
             diagnosticCallback: { [weak self] diagnostic in
-                self?.bridgeMenuItem.title = diagnostic
+                self?.codexDiagnostic = diagnostic
+                self?.refreshEffectiveState()
             }
         )
 
@@ -1121,13 +1247,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             self?.ipcMonitor.updateCandidateThreadIDs(threadIDs)
         }
 
+        dshMonitor = DSHStatusMonitor { [weak self] status in
+            self?.receiveDSHStatus(status)
+        }
+
         ipcMonitor.start()
         monitor.start()
+        dshMonitor.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         monitor?.stop()
         ipcMonitor?.stop()
+        dshMonitor?.stop()
+        if let dshLaunchProcess, dshLaunchProcess.isRunning {
+            dshLaunchProcess.terminate()
+        }
     }
 
     private func makePanel() {
@@ -1167,6 +1302,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let menu = NSMenu(title: "Discipline")
         menu.delegate = self
 
+        sourceMenuItem = NSMenuItem(title: liveSource, action: nil, keyEquivalent: "")
+        sourceMenuItem.isEnabled = false
+        menu.addItem(sourceMenuItem)
+
         stateMenuItem = NSMenuItem(title: "State: Idle", action: nil, keyEquivalent: "")
         stateMenuItem.isEnabled = false
         menu.addItem(stateMenuItem)
@@ -1180,8 +1319,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(bridgeMenuItem)
         menu.addItem(.separator())
 
-        menu.addItem(NSMenuItem(title: "Show / Hide", action: #selector(togglePanel), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Open ChatGPT", action: #selector(openChatGPT), keyEquivalent: ""))
+        let open = NSMenuItem(title: "Open", action: nil, keyEquivalent: "")
+        let openMenu = NSMenu(title: "Open")
+        let dshItem = NSMenuItem(title: "Open DSH", action: #selector(openDSH), keyEquivalent: "")
+        dshItem.target = self
+        openMenu.addItem(dshItem)
+        let gptItem = NSMenuItem(title: "Open ChatGPT", action: #selector(openChatGPT), keyEquivalent: "")
+        gptItem.target = self
+        openMenu.addItem(gptItem)
+        open.submenu = openMenu
+        menu.addItem(open)
 
         let preview = NSMenuItem(title: "Preview state", action: nil, keyEquivalent: "")
         let previewMenu = NSMenu(title: "Preview state")
@@ -1196,10 +1343,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
         preview.submenu = previewMenu
         menu.addItem(preview)
+
+        menu.addItem(NSMenuItem(title: "Show / Hide", action: #selector(togglePanel), keyEquivalent: ""))
+
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Discipline", action: #selector(quit), keyEquivalent: "q"))
 
         for item in menu.items where item.action != nil {
+            item.target = self
+        }
+        for item in openMenu.items {
             item.target = self
         }
         for item in previewMenu.items {
@@ -1216,39 +1369,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func receiveRuntimeSnapshot(_ snapshot: LiveRuntimeSnapshot?) {
         runtimeSnapshot = snapshot
+        if let snapshot, snapshot.state != .idle {
+            codexLastActivityAt = Date()
+        }
         refreshEffectiveState()
     }
 
-    private func refreshEffectiveState() {
+    private func receiveDSHStatus(_ status: DSHStatusMonitor.Status) {
+        dshStatus = status
+        refreshEffectiveState()
+    }
+
+    private struct LiveCandidate {
+        let source: String       // 显示名："DSH" / "Codex"
+        let bridgePrefix: String // 桥前缀："dsh" / "codex"
+        let lastActivity: Date
         let state: PetState
         let detail: String
+    }
 
-        if let runtimeSnapshot {
-            switch runtimeSnapshot.state {
-            case .idle:
-                if fallbackState == .ready || fallbackState == .blocked {
-                    state = fallbackState
-                    detail = fallbackDetail
-                } else {
-                    state = .idle
-                    detail = runtimeSnapshot.detail
-                }
-            case .running, .needs, .blocked:
-                state = runtimeSnapshot.state
-                detail = runtimeSnapshot.detail
-            case .ready:
+    /// 活动抢占：谁最近在干活谁驱动；都空闲时取最近 30 分钟内动过的；都没有 → 无驱动源（中立）。
+    /// 两个源地位平等、无默认优先级——用谁谁就是主。
+    private func refreshEffectiveState() {
+        var candidates: [LiveCandidate] = []
+
+        if case .live(let snap) = dshStatus {
+            candidates.append(LiveCandidate(
+                source: "DSH",
+                bridgePrefix: "dsh",
+                lastActivity: snap.lastEventAt,
+                state: snap.state,
+                detail: snap.detail
+            ))
+        }
+        if let snap = runtimeSnapshot {
+            candidates.append(LiveCandidate(
+                source: "Codex",
+                bridgePrefix: "codex",
+                lastActivity: codexLastActivityAt,
+                state: snap.state,
+                detail: snap.detail
+            ))
+        }
+
+        let active = candidates.filter { $0.state != .idle }
+        let recentlyUsed = candidates.filter { $0.lastActivity > Date().addingTimeInterval(-30 * 60) }
+        let driver = active.max(by: { $0.lastActivity < $1.lastActivity })
+            ?? recentlyUsed.max(by: { $0.lastActivity < $1.lastActivity })
+
+        if let driver {
+            var state = driver.state
+            var detail = driver.detail
+            // Codex 的 ready/blocked 闪烁来自会话日志兜底（DSH 由插件自带）
+            if driver.source == "Codex", state == .idle,
+               fallbackState == .ready || fallbackState == .blocked {
                 state = fallbackState
                 detail = fallbackDetail
             }
+            liveState = state
+            liveDetail = detail
+            liveSource = driver.source
+            liveBridge = bridgeLine(for: driver)
+            guard previewWorkItem == nil else { return }
+            apply(state, detail: detail, source: driver.source, bridge: liveBridge)
+        } else if !candidates.isEmpty {
+            // 有在线源但都空闲且近期无活动：无驱动源（中立），状态为 idle
+            liveState = .idle
+            liveDetail = "No active tasks"
+            liveSource = "—"
+            liveBridge = "—"
+            guard previewWorkItem == nil else { return }
+            apply(.idle, detail: "No active tasks", source: "—", bridge: "—")
         } else {
-            state = fallbackState
-            detail = fallbackDetail
+            // 无在线源：会话日志兜底
+            liveState = fallbackState
+            liveDetail = fallbackDetail
+            liveSource = "Session logs"
+            liveBridge = "session fallback"
+            guard previewWorkItem == nil else { return }
+            apply(fallbackState, detail: fallbackDetail, source: "Session logs", bridge: "session fallback")
         }
+    }
 
-        liveState = state
-        liveDetail = detail
-        guard previewWorkItem == nil else { return }
-        apply(state, detail: detail)
+    private func bridgeLine(for driver: LiveCandidate) -> String {
+        if driver.bridgePrefix == "dsh" {
+            if case .live(let snap) = dshStatus {
+                var line = "dsh plugin live"
+                if !snap.diagnostic.isEmpty {
+                    line += " · " + snap.diagnostic
+                }
+                return line
+            }
+            return "dsh status stale"
+        }
+        var line = "codex \(codexConnectionStatus())"
+        if let snap = runtimeSnapshot, snap.state != .idle {
+            let suffix = codexActivitySuffix()
+            if !suffix.isEmpty {
+                line += " · " + suffix
+            }
+        }
+        return line
+    }
+
+    private func codexConnectionStatus() -> String {
+        let d = codexDiagnostic.lowercased()
+        if d.contains("follower"), !d.contains("waiting"), !d.contains("disconnected") {
+            return "follower ready"
+        }
+        return "reconnecting…"
+    }
+
+    private func codexActivitySuffix() -> String {
+        guard let range = codexDiagnostic.range(of: "· ") else { return "" }
+        let suffix = String(codexDiagnostic[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+        if suffix.lowercased().contains("no active") { return "" }
+        return suffix
     }
 
     private func menuBarIcon() -> NSImage? {
@@ -1261,10 +1497,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         return NSImage(systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "Discipline")
     }
 
-    private func apply(_ state: PetState, detail: String) {
+    private func apply(_ state: PetState, detail: String, source: String, bridge: String) {
         renderer.setState(state)
+        sourceMenuItem.title = source
         stateMenuItem.title = "State: \(state.displayName)"
         detailMenuItem.title = detail
+        bridgeMenuItem.title = "Bridge: " + bridge
     }
 
     private func savedPanelOrigin(size: NSSize) -> NSPoint {
@@ -1288,8 +1526,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func menuWillOpen(_ menu: NSMenu) {
         if previewWorkItem == nil {
+            sourceMenuItem.title = liveSource
             stateMenuItem.title = "State: \(liveState.displayName)"
             detailMenuItem.title = liveDetail
+            bridgeMenuItem.title = "Bridge: " + liveBridge
         }
     }
 
@@ -1305,6 +1545,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/ChatGPT.app"))
     }
 
+    @objc private func openDSH() {
+        probeDSH { [weak self] reachable in
+            guard let self else { return }
+            if reachable {
+                NSWorkspace.shared.open(self.dshWebURL)
+            } else {
+                self.launchDSHAndOpen()
+            }
+        }
+    }
+
+    private let dshWebURL = URL(string: "http://127.0.0.1:3080")!
+
+    private func probeDSH(completion: @escaping (Bool) -> Void) {
+        var request = URLRequest(url: dshWebURL)
+        request.timeoutInterval = 2
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            completion(response != nil)
+        }.resume()
+    }
+
+    private func dshLaunchDirectory() -> URL {
+        if let dir = UserDefaults.standard.string(forKey: "dshLaunchDir"), !dir.isEmpty {
+            return URL(fileURLWithPath: dir)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    private func launchDSHAndOpen() {
+        guard !dshLaunchInProgress else { return }
+        dshLaunchInProgress = true
+
+        let workDir = dshLaunchDirectory()
+        let logURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".dsh/discipline-launcher.log", isDirectory: false)
+        try? FileManager.default.createDirectory(
+            at: logURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let logHandle = FileHandle(forWritingAtPath: logURL.path)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["npx", "-y", "@deepseek-ai/dsh", "web"]
+        process.currentDirectoryURL = workDir
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        do {
+            try process.run()
+        } catch {
+            dshLaunchInProgress = false
+            NSSound.beep()
+            return
+        }
+        dshLaunchProcess = process
+
+        let deadline = Date().addingTimeInterval(30)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            while Date() < deadline {
+                if self?.isDSHReachable() == true {
+                    DispatchQueue.main.async {
+                        NSWorkspace.shared.open(self?.dshWebURL ?? URL(string: "http://127.0.0.1:3080")!)
+                        self?.dshLaunchInProgress = false
+                    }
+                    return
+                }
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.dshLaunchInProgress = false
+                NSSound.beep()
+            }
+        }
+    }
+
+    private func isDSHReachable() -> Bool {
+        let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = UInt16(3080).bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let result = withUnsafePointer(to: &addr) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                Darwin.connect(fd, socketAddress, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return result == 0
+    }
+
     @objc private func previewState(_ sender: NSMenuItem) {
         guard
             let raw = sender.representedObject as? String,
@@ -1312,12 +1644,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         else { return }
 
         previewWorkItem?.cancel()
-        apply(state, detail: "Preview — returning to live sync in 5 seconds")
+        apply(state, detail: "Preview — returning to live sync in 5 seconds",
+              source: liveSource, bridge: liveBridge)
 
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.previewWorkItem = nil
-            self.apply(self.liveState, detail: self.liveDetail)
+            self.apply(self.liveState, detail: self.liveDetail,
+                       source: self.liveSource, bridge: self.liveBridge)
         }
         previewWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: item)
