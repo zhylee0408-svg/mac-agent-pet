@@ -208,7 +208,8 @@ enum RolloutEventParser {
     /// DSH 路径的粘住 blocked 由插件按会话实时跟踪，不受此窗口限制。
     private static func blockedRecent(_ blockedAt: Date?, now: Date) -> Bool {
         guard let blockedAt else { return false }
-        return now.timeIntervalSince(blockedAt) < 1_800
+        // 10 小时窗口：出错后 10h 内视为有效 blocked（覆盖「昨晚出错、今早打开」的场景）
+        return now.timeIntervalSince(blockedAt) < 36_000
     }
 
     private static func parseDate(_ value: String?) -> Date? {
@@ -1455,13 +1456,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             guard previewWorkItem == nil else { return }
             apply(.idle, detail: "No active tasks", source: "—", bridge: "—")
         } else {
-            // 无在线源：会话日志兜底
-            liveState = fallbackState
-            liveDetail = fallbackDetail
-            liveSource = "Session logs"
-            liveBridge = "session fallback"
+            // 两个实时源都离线：显示中立，不读任何日志（避免跨端污染）
+            liveState = .idle
+            liveDetail = "No active tasks"
+            liveSource = "—"
+            liveBridge = "—"
             guard previewWorkItem == nil else { return }
-            apply(fallbackState, detail: fallbackDetail, source: "Session logs", bridge: "session fallback")
+            apply(.idle, detail: "No active tasks", source: "—", bridge: "—")
         }
     }
 

@@ -23,7 +23,7 @@
 // Restart dsh afterwards (profile rows load at boot).
 
 import { writeFile, rename, mkdir } from "node:fs/promises";
-import { writeFileSync, renameSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 
@@ -33,8 +33,8 @@ export const inject = [];
 // ── constants ────────────────────────────────────────────────────────────
 const ACTIVE_RECENT_MS = 30 * 60_000; // running/needs considered recent
 const HEARTBEAT_INTERVAL_MS = 5_000;  // rewrite even when idle
-// ready / blocked 的停留时长改为可配置（config.readyWindowMs / config.blockedWindowMs），
-// 默认 20s / 30s —— 太短容易错过，太长会掩盖下一个 turn 的开始。
+// ready 停留时长可配置（config.readyWindowMs，默认 60s）；
+// blocked 有 10h 上限（config.blockedWindowMs，默认 3.6e6 ms）：10h 内有效，恢复事件提前清除。
 
 // Event types that can change the derived state (file writes happen on these
 // only; lastEventAt still refreshes on every event).
@@ -63,30 +63,6 @@ function defaultStatusPath() {
   return join(home, "live-status.json");
 }
 
-// 停机标记：DSH 进程退出（SIGINT/SIGTERM/exit）前同步写入，把 heartbeatAt 置 0。
-// 桌宠下一次轮询即判定 DSH 离线并丢弃其最后状态——Ctrl+C 退出不会被显示成 blocked。
-// 注意：这是进程级「临终标记」，不区分 Stop/Ctrl+C 的事件——点 Stop 时进程没死，
-// 本函数不会触发，blocked 照常显示；Ctrl+C 时进程要死，本函数举手说「我没了」。
-function writeShutdownMarker(statusPath) {
-  try {
-    mkdirSync(dirname(statusPath), { recursive: true });
-    const marker = {
-      source: "dsh",
-      state: "idle",
-      detail: "DSH stopped",
-      diagnostic: "",
-      updatedAt: Date.now(),
-      heartbeatAt: 0, // 关键：0 → 桌宠判定心跳过期 → DSH 离线
-      sessions: []
-    };
-    const tmp = `${statusPath}.tmp`;
-    writeFileSync(tmp, JSON.stringify(marker, null, 2));
-    renameSync(tmp, statusPath);
-  } catch (err) {
-    /* 尽力而为：写失败不影响退出；桌宠会靠 30s 心跳过期兜底 */
-  }
-}
-
 function blankSession(id) {
   return {
     id,
@@ -101,11 +77,32 @@ function blankSession(id) {
 export function apply(ctx, config) {
   // Cordis 协议：config 作为第二个参数传入，不能读 ctx.config（需显式 inject）。
   const statusPath = config?.path ?? defaultStatusPath();
-  const readyWindowMs = config?.readyWindowMs ?? 60_000; // 绿色 ready 停留时长（默认 60s，config 可改）
-  // blocked 是「粘住」状态：不因时间过期，直到恢复事件（turn/start / approval/asked / 新 session）才切换。
+  const readyWindowMs = config?.readyWindowMs ?? 60_000;      // 绿色 ready 停留时长（默认 60s，可配置）
+  const blockedWindowMs = config?.blockedWindowMs ?? 3_600_000; // blocked 10h 上限（恢复事件提前清除）
   const sessions = new Map(); // sessionId -> session state row
   let lastEventTime = 0;      // most recent event across all sessions
   let writeChain = Promise.resolve();
+
+  // 启动时恢复 10h 内的历史 blocked（例如昨晚 DSH 出错后今早重开 → 爆红）。
+  // 只恢复 blocked：running/needs 随进程重启失效，唯独故障是事实、值得保留。
+  try {
+    const prev = JSON.parse(readFileSync(statusPath, "utf8"));
+    const nowMs = Date.now();
+    for (const row of prev.sessions ?? []) {
+      if (row?.state === "blocked" && row.id && nowMs - row.stateAt < blockedWindowMs) {
+        sessions.set(row.id, {
+          id: row.id,
+          state: "blocked",
+          stateAt: row.stateAt,
+          lastEventAt: row.stateAt,
+          turn: row.turn ?? 0,
+          pendingApproval: false
+        });
+      }
+    }
+  } catch {
+    /* 首次运行或旧文件不可读：从空开始 */
+  }
 
   function onEvent(session, event) {
     const id = session?.id;
@@ -177,7 +174,7 @@ export function apply(ctx, config) {
       const recent = now - s.lastEventAt < ACTIVE_RECENT_MS;
       let eff = s.state;
       if (s.state === "ready" && age > readyWindowMs) eff = "idle";
-      // blocked：粘住，不因时间过期；只有恢复事件（turn/start 等）才切换
+      if (s.state === "blocked" && age > blockedWindowMs) eff = "idle"; // 10h 上限；恢复事件提前清除
       if ((s.state === "running" || s.state === "needs") && !recent) eff = "idle";
 
       rows.push({
@@ -258,8 +255,22 @@ export function apply(ctx, config) {
   ctx.on("session/event", onEvent);
   const timer = setInterval(scheduleWrite, HEARTBEAT_INTERVAL_MS);
 
-  // 进程退出信号 → 写停机标记（尽力而为；kill -9 捕获不到时靠桌宠侧 30s 心跳过期兜底）
-  const onShutdown = () => writeShutdownMarker(statusPath);
+  // 停机标记：DSH 进程退出（SIGINT/SIGTERM/exit）前同步写入，把 heartbeatAt 置 0。
+  // 桌宠下一次轮询即判定 DSH 离线并丢弃其最后状态——Ctrl+C 退出不会被显示成 blocked。
+  // 保留 effectiveState 的 sessions（含历史 blocked），供下次启动恢复 10h 内的故障。
+  // 注意：这是进程级「临终标记」，不区分 Stop/Ctrl+C 的事件——点 Stop 时进程没死，
+  // 本函数不会触发，blocked 照常显示；Ctrl+C 时进程要死，本函数举手说「我没了」。
+  const onShutdown = () => {
+    try {
+      mkdirSync(dirname(statusPath), { recursive: true });
+      const marker = { ...effectiveState(), heartbeatAt: 0, stopped: true };
+      const tmp = `${statusPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify(marker, null, 2));
+      renameSync(tmp, statusPath);
+    } catch (err) {
+      /* 尽力而为：写失败不影响退出；桌宠会靠 30s 心跳过期兜底 */
+    }
+  };
   process.once("SIGINT", onShutdown);
   process.once("SIGTERM", onShutdown);
   process.once("exit", onShutdown);
