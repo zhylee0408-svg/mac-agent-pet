@@ -34,7 +34,7 @@ export const inject = [];
 const ACTIVE_RECENT_MS = 30 * 60_000; // running/needs considered recent
 const HEARTBEAT_INTERVAL_MS = 5_000;  // rewrite even when idle
 // ready 停留时长可配置（config.readyWindowMs，默认 60s）；
-// blocked 有 10h 上限（config.blockedWindowMs，默认 3.6e6 ms）：10h 内有效，恢复事件提前清除。
+// blocked 有 10h 上限（config.blockedWindowMs，默认 3.6e7 ms = 10h）：10h 内有效，恢复事件提前清除。
 
 // Event types that can change the derived state (file writes happen on these
 // only; lastEventAt still refreshes on every event).
@@ -78,7 +78,7 @@ export function apply(ctx, config) {
   // Cordis 协议：config 作为第二个参数传入，不能读 ctx.config（需显式 inject）。
   const statusPath = config?.path ?? defaultStatusPath();
   const readyWindowMs = config?.readyWindowMs ?? 60_000;      // 绿色 ready 停留时长（默认 60s，可配置）
-  const blockedWindowMs = config?.blockedWindowMs ?? 3_600_000; // blocked 10h 上限（恢复事件提前清除）
+  const blockedWindowMs = config?.blockedWindowMs ?? 36_000_000; // blocked 10h 上限（恢复事件提前清除）
   const sessions = new Map(); // sessionId -> session state row
   let lastEventTime = 0;      // most recent event across all sessions
   let writeChain = Promise.resolve();
