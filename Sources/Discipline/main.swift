@@ -19,6 +19,17 @@ enum PetState: String, CaseIterable {
         case .blocked: return "Blocked"
         }
     }
+
+    /// 跨来源仲裁优先级。时间只用于相同状态之间的平局，不覆盖状态语义。
+    var arbitrationPriority: Int {
+        switch self {
+        case .needs: return 4
+        case .blocked: return 3
+        case .running: return 2
+        case .ready: return 1
+        case .idle: return 0
+        }
+    }
 }
 
 struct SessionFileState {
@@ -29,8 +40,8 @@ struct SessionFileState {
     var needsInput = false
     var pendingRequestID: String?
     var readyUntil: Date?
-    var blocked = false   // 粘住：直到恢复事件才清除（对齐 DSH 语义）
-    var blockedAt: Date?  // 出错时间；兜底只在最近 30 分钟内把它视为有效 blocked
+    var blocked = false   // 记录故障；恢复事件清除，聚合时另受 10 小时窗口约束
+    var blockedAt: Date?  // 出错时间；兜底只在最近 10 小时内把它视为有效 blocked
     var lastActivity = Date.distantPast
     var modificationDate = Date.distantPast
 }
@@ -204,8 +215,8 @@ enum RolloutEventParser {
         }
     }
 
-    /// 兜底的 blocked 只在出错后 30 分钟内有效：陈旧故障（如昨天出错的会话）不报红。
-    /// DSH 路径的粘住 blocked 由插件按会话实时跟踪，不受此窗口限制。
+    /// Codex 会话兜底的 blocked 只在出错后 10 小时内有效。
+    /// DSH 插件使用相同的 10 小时窗口，并在恢复事件到来时提前清除。
     private static func blockedRecent(_ blockedAt: Date?, now: Date) -> Bool {
         guard let blockedAt else { return false }
         // 10 小时窗口：出错后 10h 内视为有效 blocked（覆盖「昨晚出错、今早打开」的场景）
@@ -229,6 +240,28 @@ struct LiveRuntimeSnapshot: Equatable {
     let detail: String
 }
 
+enum CodexBridgeHealth {
+    static func connectionLabel(
+        snapshot: LiveRuntimeSnapshot?,
+        diagnostic: String
+    ) -> String {
+        guard snapshot != nil else { return "reconnecting…" }
+
+        let normalized = diagnostic.lowercased()
+        let reconnectingSignals = [
+            "disconnected",
+            "waiting for codex desktop",
+            "connection failed",
+            "could not create local socket",
+            "initializing follower sync"
+        ]
+        if reconnectingSignals.contains(where: normalized.contains) {
+            return "reconnecting…"
+        }
+        return "follower live"
+    }
+}
+
 struct LiveThreadStatus: Equatable {
     var type: String
     var activeFlags: [String]
@@ -246,9 +279,7 @@ struct LiveThreadStatus: Equatable {
 }
 
 enum RuntimeStatusReducer {
-    static func snapshot(from statuses: [LiveThreadStatus]) -> LiveRuntimeSnapshot? {
-        guard !statuses.isEmpty else { return nil }
-
+    static func snapshot(from statuses: [LiveThreadStatus]) -> LiveRuntimeSnapshot {
         let activeStatuses = statuses.filter { $0.type == "active" }
         let waitingCount = activeStatuses.filter { status in
             status.activeFlags.contains("waitingOnApproval")
@@ -259,23 +290,136 @@ enum RuntimeStatusReducer {
             let noun = waitingCount == 1 ? "task" : "tasks"
             return LiveRuntimeSnapshot(
                 state: .needs,
-                detail: "\(waitingCount) \(noun) waiting for input — live Codex status"
+                detail: "\(waitingCount) \(noun) waiting for input"
             )
         }
 
         if statuses.contains(where: { $0.type == "systemError" }) {
-            return LiveRuntimeSnapshot(state: .blocked, detail: "A task hit a system error — live Codex status")
+            return LiveRuntimeSnapshot(state: .blocked, detail: "A task hit a system error")
         }
 
         if !activeStatuses.isEmpty {
             let noun = activeStatuses.count == 1 ? "task" : "tasks"
             return LiveRuntimeSnapshot(
                 state: .running,
-                detail: "\(activeStatuses.count) \(noun) running — live Codex status"
+                detail: "\(activeStatuses.count) \(noun) running"
             )
         }
 
-        return LiveRuntimeSnapshot(state: .idle, detail: "No active tasks — live Codex follower")
+        return LiveRuntimeSnapshot(state: .idle, detail: "No active tasks")
+    }
+}
+
+struct LiveSourceCandidate: Equatable {
+    let source: String       // 显示名："DSH" / "Codex"
+    let bridgePrefix: String // 桥前缀："dsh" / "codex"
+    let lastActivity: Date
+    let state: PetState
+    let detail: String
+}
+
+/// 两个或更多实时来源共用的状态仲裁器。
+///
+/// - 状态优先级：Needs > Blocked > Running > Ready > Idle。
+/// - 同优先级才按最近活动时间决定。
+/// - Ready 刚发生但被更高状态遮挡时，临时插播 5 秒。
+/// - 全部 Idle 时，只在最近活动后的 30 分钟内保留来源归属。
+struct SourceArbiter {
+    static let sourceAffinityWindow: TimeInterval = 30 * 60
+    static let readyInterruptionWindow: TimeInterval = 5
+
+    struct Result {
+        let driver: LiveSourceCandidate?
+        let nextRefreshAt: Date?
+    }
+
+    private struct ReadyInterruption {
+        let source: String
+        let until: Date
+    }
+
+    private var previousStates: [String: PetState] = [:]
+    private var readyInterruption: ReadyInterruption?
+    private var lastSelectedSource: String?
+
+    mutating func select(from candidates: [LiveSourceCandidate], now: Date = Date()) -> Result {
+        let onlineSources = Set(candidates.map(\.source))
+        previousStates = previousStates.filter { onlineSources.contains($0.key) }
+
+        let readyTransitions = candidates.filter {
+            $0.state == .ready && previousStates[$0.source] != .ready
+        }
+        if let newestReady = mostRecent(readyTransitions),
+           candidates.contains(where: {
+               $0.source != newestReady.source
+                   && $0.state.arbitrationPriority > PetState.ready.arbitrationPriority
+           }) {
+            readyInterruption = ReadyInterruption(
+                source: newestReady.source,
+                until: now.addingTimeInterval(Self.readyInterruptionWindow)
+            )
+        }
+
+        for candidate in candidates {
+            previousStates[candidate.source] = candidate.state
+        }
+
+        if let interruption = readyInterruption,
+           interruption.until > now,
+           let ready = candidates.first(where: {
+               $0.source == interruption.source && $0.state == .ready
+           }),
+           candidates.contains(where: {
+               $0.source != ready.source
+                   && $0.state.arbitrationPriority > PetState.ready.arbitrationPriority
+           }) {
+            lastSelectedSource = ready.source
+            return Result(driver: ready, nextRefreshAt: interruption.until)
+        }
+        readyInterruption = nil
+
+        let nonIdle = candidates.filter { $0.state != .idle }
+        if let driver = preferred(nonIdle) {
+            lastSelectedSource = driver.source
+            return Result(driver: driver, nextRefreshAt: nil)
+        }
+
+        let recent = candidates.filter {
+            $0.lastActivity != .distantPast
+                && now.timeIntervalSince($0.lastActivity) < Self.sourceAffinityWindow
+        }
+        guard let driver = preferred(recent) else {
+            lastSelectedSource = nil
+            return Result(driver: nil, nextRefreshAt: nil)
+        }
+
+        lastSelectedSource = driver.source
+        return Result(
+            driver: driver,
+            nextRefreshAt: driver.lastActivity.addingTimeInterval(Self.sourceAffinityWindow)
+        )
+    }
+
+    private func mostRecent(_ candidates: [LiveSourceCandidate]) -> LiveSourceCandidate? {
+        candidates.reduce(nil) { best, candidate in
+            guard let best else { return candidate }
+            return candidate.lastActivity > best.lastActivity ? candidate : best
+        }
+    }
+
+    private func preferred(_ candidates: [LiveSourceCandidate]) -> LiveSourceCandidate? {
+        candidates.reduce(nil) { best, candidate in
+            guard let best else { return candidate }
+            if candidate.state.arbitrationPriority != best.state.arbitrationPriority {
+                return candidate.state.arbitrationPriority > best.state.arbitrationPriority
+                    ? candidate : best
+            }
+            if candidate.lastActivity != best.lastActivity {
+                return candidate.lastActivity > best.lastActivity ? candidate : best
+            }
+            if candidate.source == lastSelectedSource { return candidate }
+            return best
+        }
     }
 }
 
@@ -352,6 +496,8 @@ final class CodexIPCStatusMonitor {
     private var lastPublished: LiveRuntimeSnapshot?
     private var hasPublishedLiveValue = false
     private var lastDiagnostic = ""
+    private var offlinePublishWorkItem: DispatchWorkItem?
+    private let reconnectGraceSeconds: TimeInterval = 10
 
     init(
         socketPath: String,
@@ -527,7 +673,12 @@ final class CodexIPCStatusMonitor {
                 return
             }
             clientID = id
+            offlinePublishWorkItem?.cancel()
+            offlinePublishWorkItem = nil
             report("Bridge: follower sync ready; discovering active tasks…")
+            // IPC 已初始化即代表 Codex 在线。即使当前没有订阅/任务，也发布在线 Idle，
+            // 让上层能把“在线但空闲”和“follower 离线（nil）”明确区分。
+            publishCurrentSnapshot()
             refreshSubscriptions()
             startRefreshing()
             return
@@ -769,6 +920,7 @@ final class CodexIPCStatusMonitor {
     }
 
     private func publishCurrentSnapshot() {
+        guard clientID != nil, socketFD >= 0 else { return }
         let statuses = subscriptions.values.compactMap(\.status)
         publish(RuntimeStatusReducer.snapshot(from: statuses))
     }
@@ -838,17 +990,44 @@ final class CodexIPCStatusMonitor {
         }
         socketFD = -1
 
-        if hasPublishedLiveValue {
-            hasPublishedLiveValue = false
-            lastPublished = nil
-            DispatchQueue.main.async { [callback] in callback(nil) }
-        }
+        report("Bridge: follower disconnected; reconnecting")
 
-        report("Bridge: follower disconnected; using session fallback")
+        if scheduleReconnect, hasPublishedLiveValue {
+            // Codex Desktop 的本地 follower 偶尔会在任务边界短暂重连。此时立刻发布 nil
+            // 会让刚完成的 Codex 来源消失并错误回跳到 DSH。先降为 Idle 并保留 10 秒；
+            // 若重连成功继续使用在线快照，持续失败才正式发布离线 nil。
+            publish(LiveRuntimeSnapshot(
+                state: .idle,
+                detail: "Codex follower reconnecting"
+            ))
+            scheduleOfflinePublication()
+        } else {
+            offlinePublishWorkItem?.cancel()
+            offlinePublishWorkItem = nil
+            publishOffline()
+        }
 
         if scheduleReconnect, !stopping {
             self.scheduleReconnect()
         }
+    }
+
+    private func scheduleOfflinePublication() {
+        offlinePublishWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.clientID == nil else { return }
+            self.offlinePublishWorkItem = nil
+            self.publishOffline()
+        }
+        offlinePublishWorkItem = item
+        queue.asyncAfter(deadline: .now() + reconnectGraceSeconds, execute: item)
+    }
+
+    private func publishOffline() {
+        guard hasPublishedLiveValue else { return }
+        hasPublishedLiveValue = false
+        lastPublished = nil
+        DispatchQueue.main.async { [callback] in callback(nil) }
     }
 
     private func scheduleReconnect() {
@@ -864,7 +1043,7 @@ final class CodexIPCStatusMonitor {
 }
 
 final class SessionMonitor {
-    typealias Callback = (PetState, String, [String]) -> Void
+    typealias Callback = (PetState, String, [String], Date) -> Void
 
     private let root: URL
     private let callback: Callback
@@ -874,6 +1053,7 @@ final class SessionMonitor {
     private var lastPublishedState: PetState?
     private var lastPublishedDetail = ""
     private var lastPublishedThreadIDs: [String] = []
+    private var lastPublishedActivity = Date.distantPast
 
     init(root: URL, callback: @escaping Callback) {
         self.root = root
@@ -913,6 +1093,7 @@ final class SessionMonitor {
         }
 
         let result = RolloutEventParser.aggregate(Array(files.values))
+        let latestActivity = files.values.map(\.lastActivity).max() ?? .distantPast
         let candidateThreadIDs = files.values
             .filter { state in
                 state.active && Date().timeIntervalSince(state.modificationDate) < 86_400
@@ -927,12 +1108,14 @@ final class SessionMonitor {
 
         if result.0 != lastPublishedState
             || result.1 != lastPublishedDetail
+            || latestActivity != lastPublishedActivity
             || candidateThreadIDs != lastPublishedThreadIDs {
             lastPublishedState = result.0
             lastPublishedDetail = result.1
+            lastPublishedActivity = latestActivity
             lastPublishedThreadIDs = candidateThreadIDs
             DispatchQueue.main.async { [callback] in
-                callback(result.0, result.1, candidateThreadIDs)
+                callback(result.0, result.1, candidateThreadIDs, latestActivity)
             }
         }
     }
@@ -1233,6 +1416,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var dshStatus: DSHStatusMonitor.Status = .absent
     private var codexDiagnostic = ""
     private var codexLastActivityAt = Date.distantPast
+    private var sourceArbiter = SourceArbiter()
+    private var stateRefreshWorkItem: DispatchWorkItem?
     private var previewWorkItem: DispatchWorkItem?
     private var dshLaunchInProgress = false
     private var dshLaunchProcess: Process?
@@ -1257,8 +1442,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         let sessions = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true)
-        monitor = SessionMonitor(root: sessions) { [weak self] state, detail, threadIDs in
-            self?.receiveFallbackState(state, detail: detail)
+        monitor = SessionMonitor(root: sessions) { [weak self] state, detail, threadIDs, lastActivity in
+            self?.receiveFallbackState(state, detail: detail, lastActivity: lastActivity)
             self?.ipcMonitor.updateCandidateThreadIDs(threadIDs)
         }
 
@@ -1272,6 +1457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        stateRefreshWorkItem?.cancel()
         monitor?.stop()
         ipcMonitor?.stop()
         dshMonitor?.stop()
@@ -1336,12 +1522,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         let open = NSMenuItem(title: "Open", action: nil, keyEquivalent: "")
         let openMenu = NSMenu(title: "Open")
+        let codexItem = NSMenuItem(title: "Open Codex", action: #selector(openCodex), keyEquivalent: "")
+        codexItem.target = self
+        openMenu.addItem(codexItem)
         let dshItem = NSMenuItem(title: "Open DSH", action: #selector(openDSH), keyEquivalent: "")
         dshItem.target = self
         openMenu.addItem(dshItem)
-        let gptItem = NSMenuItem(title: "Open ChatGPT", action: #selector(openChatGPT), keyEquivalent: "")
-        gptItem.target = self
-        openMenu.addItem(gptItem)
         open.submenu = openMenu
         menu.addItem(open)
 
@@ -1376,16 +1562,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         statusItem.menu = menu
     }
 
-    private func receiveFallbackState(_ state: PetState, detail: String) {
+    private func receiveFallbackState(_ state: PetState, detail: String, lastActivity: Date) {
         fallbackState = state
         fallbackDetail = detail
+        if lastActivity != .distantPast {
+            codexLastActivityAt = max(codexLastActivityAt, lastActivity)
+        }
         refreshEffectiveState()
     }
 
     private func receiveRuntimeSnapshot(_ snapshot: LiveRuntimeSnapshot?) {
+        let previous = runtimeSnapshot
+        let changed = snapshot != previous
         runtimeSnapshot = snapshot
-        if let snapshot, snapshot.state != .idle {
-            codexLastActivityAt = Date()
+        if changed, let snapshot {
+            let becameActive = snapshot.state != .idle
+            let justFinishedOrDisconnected = (previous.map { $0.state != .idle } ?? false)
+                && snapshot.state == .idle
+            if becameActive || justFinishedOrDisconnected {
+                codexLastActivityAt = Date()
+            }
         }
         refreshEffectiveState()
     }
@@ -1395,21 +1591,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         refreshEffectiveState()
     }
 
-    private struct LiveCandidate {
-        let source: String       // 显示名："DSH" / "Codex"
-        let bridgePrefix: String // 桥前缀："dsh" / "codex"
-        let lastActivity: Date
-        let state: PetState
-        let detail: String
-    }
-
-    /// 活动抢占：谁最近在干活谁驱动；都空闲时取最近 30 分钟内动过的；都没有 → 无驱动源（中立）。
-    /// 两个源地位平等、无默认优先级——用谁谁就是主。
+    /// 状态优先级先于时间；同状态按最近活动时间决定。
+    /// 全部空闲时保留最近 30 分钟内使用过的来源；都离线或无近期来源则显示中立。
     private func refreshEffectiveState() {
-        var candidates: [LiveCandidate] = []
+        var candidates: [LiveSourceCandidate] = []
 
         if case .live(let snap) = dshStatus {
-            candidates.append(LiveCandidate(
+            candidates.append(LiveSourceCandidate(
                 source: "DSH",
                 bridgePrefix: "dsh",
                 lastActivity: snap.lastEventAt,
@@ -1418,45 +1606,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             ))
         }
         if let snap = runtimeSnapshot {
-            candidates.append(LiveCandidate(
-                source: "Codex",
-                bridgePrefix: "codex",
-                lastActivity: codexLastActivityAt,
-                state: snap.state,
-                detail: snap.detail
-            ))
-        }
-
-        let active = candidates.filter { $0.state != .idle }
-        let recentlyUsed = candidates.filter { $0.lastActivity > Date().addingTimeInterval(-30 * 60) }
-        let driver = active.max(by: { $0.lastActivity < $1.lastActivity })
-            ?? recentlyUsed.max(by: { $0.lastActivity < $1.lastActivity })
-
-        if let driver {
-            var state = driver.state
-            var detail = driver.detail
-            // Codex 的 ready/blocked 闪烁来自会话日志兜底（DSH 由插件自带）
-            if driver.source == "Codex", state == .idle,
-               fallbackState == .ready || fallbackState == .blocked {
+            var state = snap.state
+            var detail = snap.detail
+            // 实时 follower 负责 Running/Needs；会话日志只补齐完成和故障转场。
+            if state == .idle, fallbackState == .ready || fallbackState == .blocked {
                 state = fallbackState
                 detail = fallbackDetail
             }
-            liveState = state
-            liveDetail = detail
+            candidates.append(LiveSourceCandidate(
+                source: "Codex",
+                bridgePrefix: "codex",
+                lastActivity: codexLastActivityAt,
+                state: state,
+                detail: detail
+            ))
+        }
+
+        let decision = sourceArbiter.select(from: candidates)
+        scheduleStateRefresh(at: decision.nextRefreshAt)
+
+        if let driver = decision.driver {
+            liveState = driver.state
+            liveDetail = driver.detail
             liveSource = driver.source
             liveBridge = bridgeLine(for: driver)
             guard previewWorkItem == nil else { return }
-            apply(state, detail: detail, source: driver.source, bridge: liveBridge)
-        } else if !candidates.isEmpty {
-            // 有在线源但都空闲且近期无活动：无驱动源（中立），状态为 idle
-            liveState = .idle
-            liveDetail = "No active tasks"
-            liveSource = "—"
-            liveBridge = "—"
-            guard previewWorkItem == nil else { return }
-            apply(.idle, detail: "No active tasks", source: "—", bridge: "—")
+            apply(driver.state, detail: driver.detail, source: driver.source, bridge: liveBridge)
         } else {
-            // 两个实时源都离线：显示中立，不读任何日志（避免跨端污染）
+            // 两源都离线，或在线但都 Idle 且 30 分钟内没有使用记录。
             liveState = .idle
             liveDetail = "No active tasks"
             liveSource = "—"
@@ -1466,7 +1643,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
-    private func bridgeLine(for driver: LiveCandidate) -> String {
+    private func scheduleStateRefresh(at date: Date?) {
+        stateRefreshWorkItem?.cancel()
+        stateRefreshWorkItem = nil
+        guard let date else { return }
+
+        let item = DispatchWorkItem { [weak self] in
+            self?.stateRefreshWorkItem = nil
+            self?.refreshEffectiveState()
+        }
+        stateRefreshWorkItem = item
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0.05, date.timeIntervalSinceNow),
+            execute: item
+        )
+    }
+
+    private func bridgeLine(for driver: LiveSourceCandidate) -> String {
         if driver.bridgePrefix == "dsh" {
             if case .live(let snap) = dshStatus {
                 var line = "dsh plugin live"
@@ -1488,11 +1681,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func codexConnectionStatus() -> String {
-        let d = codexDiagnostic.lowercased()
-        if d.contains("follower"), !d.contains("waiting"), !d.contains("disconnected") {
-            return "follower ready"
-        }
-        return "reconnecting…"
+        CodexBridgeHealth.connectionLabel(
+            snapshot: runtimeSnapshot,
+            diagnostic: codexDiagnostic
+        )
     }
 
     private func codexActivitySuffix() -> String {
@@ -1556,7 +1748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
-    @objc private func openChatGPT() {
+    @objc private func openCodex() {
         NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/ChatGPT.app"))
     }
 
@@ -1723,14 +1915,122 @@ private func runSelfTests() -> Bool {
         LiveThreadStatus(type: "active", activeFlags: ["waitingOnApproval"]),
         LiveThreadStatus(type: "idle")
     ]
-    guard RuntimeStatusReducer.snapshot(from: liveStatuses)?.state == .needs else { return false }
+    guard RuntimeStatusReducer.snapshot(from: liveStatuses).state == .needs else { return false }
 
     let runningStatuses = [
         LiveThreadStatus(type: "active"),
         LiveThreadStatus(type: "idle")
     ]
-    guard RuntimeStatusReducer.snapshot(from: runningStatuses)?.state == .running else { return false }
-    guard RuntimeStatusReducer.snapshot(from: []) == nil else { return false }
+    guard RuntimeStatusReducer.snapshot(from: runningStatuses).state == .running else { return false }
+    guard RuntimeStatusReducer.snapshot(from: []).state == .idle else { return false }
+    let bridgeRunning = LiveRuntimeSnapshot(state: .running, detail: "Running")
+    guard CodexBridgeHealth.connectionLabel(
+        snapshot: bridgeRunning,
+        diagnostic: "Bridge: live follower · 1 active · 0 waiting"
+    ) == "follower live" else { return false }
+    guard CodexBridgeHealth.connectionLabel(
+        snapshot: bridgeRunning,
+        diagnostic: "Bridge: follower disconnected; reconnecting"
+    ) == "reconnecting…" else { return false }
+    guard CodexBridgeHealth.connectionLabel(
+        snapshot: nil,
+        diagnostic: "Bridge: live follower · 0 active · 0 waiting"
+    ) == "reconnecting…" else { return false }
+
+    let t0 = Date(timeIntervalSince1970: 10_000)
+    let codexIdle = LiveSourceCandidate(
+        source: "Codex", bridgePrefix: "codex", lastActivity: t0,
+        state: .idle, detail: "No active tasks"
+    )
+    let dshIdle = LiveSourceCandidate(
+        source: "DSH", bridgePrefix: "dsh", lastActivity: t0.addingTimeInterval(-60),
+        state: .idle, detail: "No active tasks"
+    )
+    var affinityArbiter = SourceArbiter()
+    guard affinityArbiter.select(
+        from: [dshIdle, codexIdle], now: t0.addingTimeInterval(1_799)
+    ).driver?.source == "Codex" else { return false }
+    guard affinityArbiter.select(
+        from: [dshIdle, codexIdle], now: t0.addingTimeInterval(1_801)
+    ).driver == nil else { return false }
+
+    let dshEarlierIdle = LiveSourceCandidate(
+        source: "DSH", bridgePrefix: "dsh", lastActivity: t0,
+        state: .idle, detail: "No active tasks"
+    )
+    let codexLaterRunning = LiveSourceCandidate(
+        source: "Codex", bridgePrefix: "codex", lastActivity: t0.addingTimeInterval(6),
+        state: .running, detail: "Running"
+    )
+    var completionAffinityArbiter = SourceArbiter()
+    guard completionAffinityArbiter.select(
+        from: [dshEarlierIdle, codexLaterRunning], now: t0.addingTimeInterval(6)
+    ).driver?.source == "Codex" else { return false }
+    let codexLaterIdle = LiveSourceCandidate(
+        source: "Codex", bridgePrefix: "codex", lastActivity: t0.addingTimeInterval(29),
+        state: .idle, detail: "No active tasks"
+    )
+    guard completionAffinityArbiter.select(
+        from: [dshEarlierIdle, codexLaterIdle], now: t0.addingTimeInterval(30)
+    ).driver?.source == "Codex" else { return false }
+
+    let olderNeeds = LiveSourceCandidate(
+        source: "DSH", bridgePrefix: "dsh", lastActivity: t0,
+        state: .needs, detail: "Needs input"
+    )
+    let newerRunning = LiveSourceCandidate(
+        source: "Codex", bridgePrefix: "codex", lastActivity: t0.addingTimeInterval(10),
+        state: .running, detail: "Running"
+    )
+    var priorityArbiter = SourceArbiter()
+    guard priorityArbiter.select(
+        from: [olderNeeds, newerRunning], now: t0.addingTimeInterval(10)
+    ).driver?.source == "DSH" else { return false }
+
+    let olderBlocked = LiveSourceCandidate(
+        source: "DSH", bridgePrefix: "dsh", lastActivity: t0,
+        state: .blocked, detail: "Blocked"
+    )
+    var blockedArbiter = SourceArbiter()
+    guard blockedArbiter.select(
+        from: [olderBlocked, newerRunning], now: t0.addingTimeInterval(10)
+    ).driver?.source == "DSH" else { return false }
+
+    let dshRunning = LiveSourceCandidate(
+        source: "DSH", bridgePrefix: "dsh", lastActivity: t0,
+        state: .running, detail: "Running"
+    )
+    let codexRunning = LiveSourceCandidate(
+        source: "Codex", bridgePrefix: "codex", lastActivity: t0.addingTimeInterval(1),
+        state: .running, detail: "Running"
+    )
+    var readyArbiter = SourceArbiter()
+    guard readyArbiter.select(
+        from: [dshRunning, codexRunning], now: t0.addingTimeInterval(1)
+    ).driver?.source == "Codex" else { return false }
+
+    let dshReady = LiveSourceCandidate(
+        source: "DSH", bridgePrefix: "dsh", lastActivity: t0.addingTimeInterval(2),
+        state: .ready, detail: "Completed"
+    )
+    let readyNotice = readyArbiter.select(
+        from: [dshReady, codexRunning], now: t0.addingTimeInterval(2)
+    )
+    guard readyNotice.driver?.source == "DSH",
+          readyNotice.nextRefreshAt == t0.addingTimeInterval(7) else { return false }
+    guard readyArbiter.select(
+        from: [dshReady, codexRunning], now: t0.addingTimeInterval(7.1)
+    ).driver?.source == "Codex" else { return false }
+
+    var standaloneReadyArbiter = SourceArbiter()
+    guard standaloneReadyArbiter.select(
+        from: [dshReady, codexIdle], now: t0.addingTimeInterval(2)
+    ).driver?.source == "DSH" else { return false }
+    guard standaloneReadyArbiter.select(
+        from: [dshReady, codexIdle], now: t0.addingTimeInterval(20)
+    ).driver?.source == "DSH" else { return false }
+    var emptyArbiter = SourceArbiter()
+    guard emptyArbiter.select(from: [], now: t0).driver == nil else { return false }
 
     let followerSnapshot: [String: Any] = [
         "type": "snapshot",

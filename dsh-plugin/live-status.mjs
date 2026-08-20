@@ -11,9 +11,9 @@
 //   updatedAt  — last session EVENT time (ms): "recent activity"
 //   heartbeatAt— last plugin WRITE time (ms): "plugin alive"
 //
-// The pet treats `heartbeatAt` freshness as "DSH online" and `updatedAt`
-// freshness as "DSH working", which lets it distinguish a live-but-idle DSH
-// from a stopped one, and drive activity-preemption vs Codex.
+// The pet treats `heartbeatAt` freshness as "DSH online" and `updatedAt` as
+// the last activity time. Running/needs persist until an explicit state event
+// or source shutdown; the pet's 30-minute window is only idle source affinity.
 //
 // Install: copy to <profile>/live-status.mjs and add a patch row:
 //   - insert:
@@ -31,7 +31,6 @@ export const name = "dsh-live-status";
 export const inject = [];
 
 // ── constants ────────────────────────────────────────────────────────────
-const ACTIVE_RECENT_MS = 30 * 60_000; // running/needs considered recent
 const HEARTBEAT_INTERVAL_MS = 5_000;  // rewrite even when idle
 // ready 停留时长可配置（config.readyWindowMs，默认 60s）；
 // blocked 有 10h 上限（config.blockedWindowMs，默认 3.6e7 ms = 10h）：10h 内有效，恢复事件提前清除。
@@ -171,11 +170,9 @@ export function apply(ctx, config) {
 
     for (const s of sessions.values()) {
       const age = now - s.stateAt;
-      const recent = now - s.lastEventAt < ACTIVE_RECENT_MS;
       let eff = s.state;
       if (s.state === "ready" && age > readyWindowMs) eff = "idle";
       if (s.state === "blocked" && age > blockedWindowMs) eff = "idle"; // 10h 上限；恢复事件提前清除
-      if ((s.state === "running" || s.state === "needs") && !recent) eff = "idle";
 
       rows.push({
         id: s.id,

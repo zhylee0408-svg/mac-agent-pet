@@ -38,16 +38,18 @@ npx -y @deepseek-ai/dsh web
 - 插件只写状态文件，不读取/记录对话内容。
 - 写失败（磁盘/权限）不致命：桌宠会把状态视为 stale 并回退到 Codex。
 - 桌宠侧规则：`heartbeatAt` 30 秒内新鲜 = DSH 在线；DSH 与 Codex 按
-  「最近活动」抢占；都离线时回退到会话日志。
+  `Needs > Blocked > Running > Ready > Idle` 仲裁，同状态才比较最近活动时间。
+  Ready 被另一个来源的更高状态遮挡时插播 5 秒；两个实时源都离线时显示中立 Idle。
 
 ## 状态语义（v2）
 
-- `running`：`turn/start` / 工具活动。
-- `needs`：`approval/asked`，**粘住**直到 `approval/decided`（或会话 30 分钟无活动）。
+- `running`：`turn/start` / 工具活动；保持到明确的 `turn/end` 或 DSH 离线。
+- `needs`：`approval/asked`，保持到 `approval/decided`、`turn/end` 或 DSH 离线。
 - `ready`：`turn/end completed`，**时间制**，默认停留 60s（`config.readyWindowMs` 可改）后回 idle。
 - `blocked`：`turn/end` 的 error/aborted/interrupted/halted/failed/rejected/blocked/cancelled/max-tokens，
-  **粘住**：不因时间过期，直到恢复事件（同会话新 `turn/start`、`approval/asked` 或新 `session`）才切换。
+  最长保留 10 小时；恢复事件（同会话新 `turn/start`、`approval/asked` 或新 `session`）会提前清除。
 - 插件 mjs 是代码，补丁 yml 只负责挂载并传 `config`（重启 DSH 生效）；改 yml 的值不会改写 mjs。
 - **停机标记**：插件监听 `SIGINT`/`SIGTERM`/`exit`，DSH 进程退出前同步把
   `heartbeatAt` 置 0，桌宠下一次轮询（≤1 秒）即判定 DSH 离线并丢弃其状态——
   因此 Ctrl+C 退出不会被显示成 blocked（点 Stop 时进程未死，blocked 照常显示）。
+- 桌宠的 30 分钟窗口只用于两个来源都 Idle 后保留最近使用来源，不会终止 DSH 的 `running` / `needs`。

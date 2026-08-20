@@ -4,4 +4,4 @@
     - id: live-status
       name: 'file:///Users/zhylee/.dsh/plugins/live-status.mjs'
       config:
-        readyWindowMs: 60000    # 绿色 ready 停留 60 秒（可改）；blocked 为粘住状态，无时长限制
+        readyWindowMs: 60000    # 绿色 ready 停留 60 秒（可改）；blocked 默认最长保留 10 小时

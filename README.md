@@ -4,21 +4,25 @@ Discipline 是 macOS 本地浮动桌宠，实时显示你正在用的 agent（De
 
 ## 状态源：两个平等的可选源
 
-桌宠监控 **DSH（DeepSeek Harness）** 和 **Codex Desktop** 两个状态源，两者**地位平等、无默认优先级**——谁最近在干活谁就是当前驱动源（活动抢占），你正在用谁，桌宠就显示谁的状态：
+桌宠监控 **DSH（DeepSeek Harness）** 和 **Codex Desktop** 两个状态源，两者**地位平等、无固定来源优先级**。桌宠先比较状态语义，状态相同时才比较最近活动时间：
 
 - **DSH**：通过 `dsh-plugin`（跑在 DSH 进程内的插件，见 `dsh-plugin/`）把实时状态写入 `~/.dsh/live-status.json`，桌宠轮询该文件。
-- **Codex**：只读连接 Codex Desktop 的本地 IPC（follower 协议），实时订阅任务线程状态；Codex Desktop 不可用时回退到 `~/.codex/sessions/**/*.jsonl` 会话日志。
+- **Codex**：只读连接 Codex Desktop 的本地 IPC（follower 协议），实时订阅任务线程状态；连接成功但没有任务时明确发布“在线 + Idle”，只有 follower 断开才视为离线。`~/.codex/sessions/**/*.jsonl` 会话日志用于发现任务，并在 follower 在线时补充 Ready/Blocked 转场。
 
-驱动选择规则：两个源都空闲时取最近 30 分钟内活动过的那个；都没有近期活动则显示中立（`—`）；两个实时源都离线也显示中立（不读日志，避免跨端污染）。
+Codex follower 在任务边界发生短暂重连时，Discipline 会先保留 Codex 的 Idle 来源归属最多 10 秒，避免刚完成就瞬间跳回另一个 Idle 来源；10 秒内未恢复才正式视为离线。菜单栏 Bridge 以实时快照和明确的连接事件判断 `follower live` / `reconnecting`，不会把诊断计数中的 `0 waiting` 误判成断连。
+
+驱动选择规则：`Needs input > Blocked > Running > Ready > Idle`；同状态时最近活动的来源获胜。若一个来源刚完成、另一个来源处于更高状态，Ready 会插播 **5 秒**后返回更高状态；没有更高状态时 Ready 正常停留 60 秒。两个源都 Idle 时保留最近 30 分钟内活动过的来源；都没有近期活动或两个实时源都离线时显示中立（`—`）。
 
 ## 状态语义（DSH 与 Codex 已对齐）
 
 | 状态 | 触发 | 语义 |
 |---|---|---|
-| `running` | turn/task 开始或进行中 | 30 分钟无活动 → idle |
-| `needs` | 等待批准/用户输入 | **粘住**，直到决定（或 30 分钟无活动） |
+| `running` | turn/task 开始或进行中 | 保持到明确的完成、失败、取消或来源离线 |
+| `needs` | 等待批准/用户输入 | 保持到批准/回答、任务结束或来源离线 |
 | `ready` | turn/task 完成 | 停留 **60 秒** → idle |
-| `blocked` | 出错/中止/失败 | **粘住**，直到恢复事件（新 turn/新任务/批准请求）才切换 |
+| `blocked` | 出错/中止/失败 | 最长保留 **10 小时**；恢复事件（新 turn/新任务/批准请求）会提前清除 |
+
+> 30 分钟只用于两个来源都 Idle 后的“最近使用来源”归属，不会把 Running 或 Needs input 强制降级为 Idle。
 
 > Codex 会话日志兜底有额外约束：只统计最近 24h 更新过的会话；且兜底的 blocked
 > 只在出错后 10 小时内有效（陈旧故障不报红）。DSH 路径的 blocked 同样有 10h 上限，
@@ -26,9 +30,9 @@ Discipline 是 macOS 本地浮动桌宠，实时显示你正在用的 agent（De
 
 ## 菜单栏
 
-菜单栏图标提供：状态来源行（`DSH` / `Codex` / `—` / `Session logs`）、`State` 行、detail 行、`Bridge:` 连接诊断行，以及：
+菜单栏图标提供：状态来源行（`DSH` / `Codex` / `—`）、`State` 行、detail 行、`Bridge:` 连接诊断行，以及：
 
-- **Open ▸**：`Open DSH`（若 `127.0.0.1:3080` 不通则自动后台拉起 DSH 后打开浏览器；启动目录可用 `defaults write com.zhylee.discipline dshLaunchDir <路径>` 配置，默认 `~`）、`Open ChatGPT`
+- **Open ▸**：`Open Codex`、`Open DSH`（若 `127.0.0.1:3080` 不通则自动后台拉起 DSH 后打开浏览器；启动目录可用 `defaults write com.zhylee.discipline dshLaunchDir <路径>` 配置，默认 `~`）
 - **Preview state ▸**：临时预览 5 个状态
 - **Show / Hide**
 
