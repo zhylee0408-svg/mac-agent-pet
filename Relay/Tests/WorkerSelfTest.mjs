@@ -128,7 +128,8 @@ async function fakeGoogleFetch(input, init) {
   assert.equal(body.message.token, undefined);
   assert.equal(body.message.android.priority, "HIGH");
   assert.equal(body.message.android.ttl, "600s");
-  assert.equal(body.message.android.collapse_key, "discipline-status");
+  // 有意不设 collapse_key：ColorOS 投递延迟时中间状态不能被合并丢弃。
+  assert.equal(body.message.android.collapse_key, undefined);
   assert.ok(Object.values(body.message.data).every((value) => typeof value === "string"));
   fcmRequests.push(body);
   return Response.json({ name: `projects/discipline-test/messages/${fcmRequests.length}` });

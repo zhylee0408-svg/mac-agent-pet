@@ -135,7 +135,8 @@ export class FCMPushSink {
         android: {
           priority: "HIGH",
           ttl: "600s",
-          collapse_key: "discipline-status",
+          // 不加 collapse_key：ColorOS 投递延迟时，中间状态（running→ready→idle）不能被合并丢弃，
+          // 手机最终会按序列补齐到最新状态。
         },
       },
     };
