@@ -1,0 +1,27 @@
+{
+  "name": "discipline-relay",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-08-20",
+  "workers_dev": true,
+  "preview_urls": false,
+  "minify": true,
+  "observability": {
+    "enabled": false
+  },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "discipline-relay",
+      "database_id": "61cf9495-7511-446b-b536-6af7d8744f7c",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "PUBLIC_RELAY_URL": "https://discipline-relay.discipline-zhylee.workers.dev",
+    "RELAY_SIGNING_PUBLIC_KEY": "8VxJWAv2SMq6GKqimymk8r6EY8VWUJ8K1PxatV3OTRY",
+    "FIREBASE_PROJECT_ID": "discipline-mobile"
+  }
+}
