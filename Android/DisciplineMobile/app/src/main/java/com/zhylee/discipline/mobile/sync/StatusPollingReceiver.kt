@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.SystemClock
 import com.zhylee.discipline.mobile.DisciplineApplication
+import kotlinx.coroutines.launch
 
 /**
  * 闹钟唤醒轮询：ColorOS 的 HANS 会冻结后台进程，协程轮询会随之中断。

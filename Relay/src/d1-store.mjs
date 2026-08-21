@@ -190,14 +190,27 @@ export class D1RelayStore {
     return { ok: false, reason: "replay", lastSequence: route.lastSequence };
   }
 
-  async commitState(deviceId, sequence, heartbeatAtMs) {
+  async commitState(deviceId, sequence, heartbeatAtMs, envelopeJson) {
     const result = await this.database.prepare(
       `UPDATE routes
        SET last_sequence = ?1, last_heartbeat_ms = ?2, offline_sent = 0,
-           pending_sequence = NULL, pending_kind = NULL, pending_at_ms = NULL
+           pending_sequence = NULL, pending_kind = NULL, pending_at_ms = NULL,
+           last_state_envelope = ?4
        WHERE device_id = ?3 AND pending_sequence = ?1 AND pending_kind = 'state'`,
-    ).bind(sequence, heartbeatAtMs, deviceId).run();
+    ).bind(sequence, heartbeatAtMs, deviceId, envelopeJson).run();
     return changes(result) === 1;
+  }
+
+  async getLatestEnvelope(deviceId) {
+    const row = await this.database.prepare(
+      "SELECT last_state_envelope FROM routes WHERE device_id = ?",
+    ).bind(deviceId).first();
+    if (!row || typeof row.last_state_envelope !== "string") return null;
+    try {
+      return JSON.parse(row.last_state_envelope);
+    } catch {
+      return null;
+    }
   }
 
   async commitOffline(deviceId, sequence) {

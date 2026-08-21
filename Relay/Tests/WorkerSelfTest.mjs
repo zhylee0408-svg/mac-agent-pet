@@ -62,7 +62,8 @@ const claim = await fixture("pairing-claim.json");
 const envelope = await fixture("encrypted-envelope.json");
 const vector = await fixture("crypto-vector-v1.json");
 let expectedFCMToken = claim.fcmToken;
-const migration = await readFile(resolve(relayDirectory, "migrations/0001_initial.sql"), "utf8");
+const migration = (await readFile(resolve(relayDirectory, "migrations/0001_initial.sql"), "utf8"))
+  + (await readFile(resolve(relayDirectory, "migrations/0002_latest_state.sql"), "utf8"));
 const wrangler = JSON.parse(await readFile(resolve(relayDirectory, "wrangler.jsonc"), "utf8"));
 
 assert.equal(wrangler.main, "src/worker.mjs");
@@ -283,10 +284,7 @@ for (const forbidden of [
   offer.oneTimeToken,
   hostAccessToken,
   deviceAccessToken,
-  envelope.ciphertext,
-  envelope.nonce,
   vector.plaintext,
-  "\"ciphertext\"",
   "\"status\"",
   "\"source\"",
   "taskText",

@@ -74,7 +74,7 @@ export class MemoryRelayStore {
     return { ok: true, route: clone(route) };
   }
 
-  async commitState(deviceId, sequence, heartbeatAtMs) {
+  async commitState(deviceId, sequence, heartbeatAtMs, envelopeJson) {
     const route = this.#routes.get(deviceId);
     if (!route || route.pendingSequence !== sequence || route.pendingKind !== "state") return false;
     route.lastSequence = sequence;
@@ -83,7 +83,18 @@ export class MemoryRelayStore {
     route.pendingSequence = null;
     route.pendingKind = null;
     route.pendingAtMs = null;
+    route.lastStateEnvelope = envelopeJson;
     return true;
+  }
+
+  async getLatestEnvelope(deviceId) {
+    const route = this.#routes.get(deviceId);
+    if (!route || typeof route.lastStateEnvelope !== "string") return null;
+    try {
+      return JSON.parse(route.lastStateEnvelope);
+    } catch {
+      return null;
+    }
   }
 
   async commitOffline(deviceId, sequence) {

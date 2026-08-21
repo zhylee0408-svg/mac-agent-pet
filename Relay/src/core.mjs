@@ -119,9 +119,7 @@ export class RelayCore {
     this.relaySigningPublicKey = relaySigningPublicKey;
     this.clock = clock;
     this.makeKeyId = makeKeyId;
-    this.#latestEnvelope = new Map(); // deviceId → 最新 state envelope（仅内存）
   }
-  #latestEnvelope;
 
   async #authenticateHost(hostId, accessToken) {
     validateAccessToken(accessToken, "Host access token");
@@ -287,11 +285,13 @@ export class RelayCore {
 
     try {
       await this.push.send(device, { kind: "state", envelope: structuredClone(envelope) });
-      const committed = await this.store.commitState(envelope.deviceId, envelope.sequence, nowMs);
+      const committed = await this.store.commitState(
+        envelope.deviceId,
+        envelope.sequence,
+        nowMs,
+        JSON.stringify(envelope),
+      );
       if (!committed) fail(500, "commit_failed", "State delivery could not be committed");
-      // 最新 envelope 只放进程内内存（不落库，保持「不持久化状态内容」的安全不变量），
-      // 供手机拉取制使用；Worker 实例回收后会短暂 404，Mac 的 60s 心跳会重新填充。
-      this.#latestEnvelope.set(envelope.deviceId, structuredClone(envelope));
     } catch (error) {
       await this.store.releaseDelivery(envelope.deviceId, envelope.sequence);
       if (error instanceof RelayError) throw error;
@@ -366,9 +366,9 @@ export class RelayCore {
 
   async latestEnvelope({ deviceId, deviceAccessToken }) {
     await this.#authenticateDevice(deviceId, deviceAccessToken);
-    const envelope = this.#latestEnvelope.get(deviceId);
-    if (!envelope) fail(404, "no_state_yet", "No recent state is available yet");
-    return structuredClone(envelope);
+    const envelope = await this.store.getLatestEnvelope(deviceId);
+    if (!envelope) fail(404, "no_state_yet", "No state has been published to this device yet");
+    return envelope;
   }
 
   async updateDevicePushToken({ deviceId, deviceAccessToken, fcmToken }) {
