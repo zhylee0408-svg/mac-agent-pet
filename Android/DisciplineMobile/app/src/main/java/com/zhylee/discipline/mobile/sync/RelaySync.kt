@@ -191,6 +191,7 @@ class PairingManager(
     val configuration = pairingStore.load() ?: return@withContext
     relay.unpair(configuration)
     repository.onUnpaired()
+    StatusPollingReceiver.cancel(context)
     (context.applicationContext as DisciplineApplication).stopStatusService()
   }
 

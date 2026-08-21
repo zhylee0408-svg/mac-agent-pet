@@ -8,6 +8,7 @@ import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import com.zhylee.discipline.mobile.DisciplineApplication
 import com.zhylee.discipline.mobile.model.DisciplineSnapshot
+import com.zhylee.discipline.mobile.sync.StatusPollingReceiver
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -51,12 +52,15 @@ class StatusForegroundService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val app = application as DisciplineApplication
     startForegroundStatus(app.repository.snapshot.value)
+    // 闹钟唤醒轮询：即使进程被 ColorOS 冻结，系统闹钟也会叫醒接收器拉取状态。
+    StatusPollingReceiver.scheduleNext(this)
     return START_STICKY
   }
 
   override fun onDestroy() {
     collectionJob?.cancel()
     pollJob?.cancel()
+    StatusPollingReceiver.cancel(this)
     super.onDestroy()
   }
 

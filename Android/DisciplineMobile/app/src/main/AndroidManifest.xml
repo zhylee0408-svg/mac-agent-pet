@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 闹钟唤醒轮询（抗 ColorOS 后台冻结）：USE_EXACT_ALARM 侧载自动授予，SCHEDULE_EXACT_ALARM 兜底 -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <application
         android:name=".DisciplineApplication"
@@ -39,6 +42,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Discipline live status indicator" />
         </service>
+
+        <!-- 闹钟唤醒轮询接收器：进程被 ColorOS 冻结时由系统闹钟叫醒拉取状态。 -->
+        <receiver
+            android:name=".sync.StatusPollingReceiver"
+            android:exported="false" />
 
         <meta-data
             android:name="firebase_messaging_installation_id_enabled"
