@@ -61,3 +61,31 @@ open ./build/Discipline.app
 ## DSH 插件安装
 
 见 `dsh-plugin/README.md`：把 `live-status.mjs` 放到 `~/.dsh/plugins/`、`cordis.patch.yml` 放到 `~/.dsh/`（home 级补丁），重启 DSH 生效。`readyWindowMs`（默认 60000）可在补丁 `config` 中调整。
+
+## Android 本地预览
+
+`Android/` 内包含当前轻量移动端同步预览：五色状态灯、Offline、通知排版、声音规则、针对 ColorOS 15 动态状态栏图标的无 root 兼容实现，以及真实配对、端到端解密和 FCM 后台接收入口。
+
+构建并通过 USB 覆盖安装：
+
+```bash
+./Android/build.sh
+./Android/install.sh
+```
+
+产物为 `Android/Discipline-local-preview.apk`。完整范围、ColorOS 实现约束和验收步骤见 `Android/README.md`。
+
+## 移动端真实同步（待首次配对验证）
+
+真实同步沿用 `Protocol/` 和 `Relay/` 的 v1 协议：Mac 只上传最终来源、五态、各来源在线状态和更新时间；对话正文、终端输出、文件内容与 detail 文本都不会进入移动端 payload。状态在 Mac 上使用 X25519 + HKDF-SHA256 派生的 AES-256-GCM 密钥加密，中继只转发密文，并在 10 分钟没有心跳后发送签名 Offline 事件。
+
+Mac 菜单中的 **Mobile sync ▸** 已包含配对状态、**Copy pairing code** 和 **Revoke phone access…**。配对码是五分钟有效的 `discipline://pair?...` 文本；Android 后续只需粘贴到单一输入框并点击 Connect。手机自行生成设备 ID、私钥和访问令牌，长期密钥不会直接放进配对码。
+
+公网中继已部署并通过健康检查。下一检查点通过以下偏好项给 Mac 指定真实 Worker 地址与 Ed25519 公钥：
+
+```bash
+defaults write com.zhylee.discipline mobileRelayURL 'https://discipline-relay.discipline-zhylee.workers.dev'
+defaults write com.zhylee.discipline mobileRelaySigningPublicKey '8VxJWAv2SMq6GKqimymk8r6EY8VWUJ8K1PxatV3OTRY'
+```
+
+未配置时菜单明确显示 `Mobile: Not configured`，也不会发起状态上传。中继只保存配对与路由元数据，不保存状态密文、任务正文、终端输出或文件内容。

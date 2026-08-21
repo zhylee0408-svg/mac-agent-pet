@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://discipline.local/schemas/state-v1.schema.json",
+  "title": "Discipline state message v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "type",
+    "sequence",
+    "source",
+    "status",
+    "sources",
+    "updatedAt"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "type": { "const": "state" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "source": { "$ref": "#/$defs/sourceId" },
+    "status": { "$ref": "#/$defs/status" },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/sourceSnapshot" }
+    },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "status": {
+      "type": "string",
+      "enum": ["idle", "running", "needs_input", "ready", "blocked"]
+    },
+    "sourceId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,31}$"
+    },
+    "sourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "online", "status"],
+      "properties": {
+        "id": { "$ref": "#/$defs/sourceId" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "online": { "type": "boolean" },
+        "status": {
+          "oneOf": [
+            { "$ref": "#/$defs/status" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "online": { "const": true } },
+            "required": ["online"]
+          },
+          "then": { "properties": { "status": { "$ref": "#/$defs/status" } } }
+        },
+        {
+          "if": {
+            "properties": { "online": { "const": false } },
+            "required": ["online"]
+          },
+          "then": { "properties": { "status": { "type": "null" } } }
+        }
+      ]
+    }
+  }
+}

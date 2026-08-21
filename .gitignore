@@ -1,2 +1,16 @@
 .DS_Store
 build/
+Protocol/.build/
+Relay/.wrangler/
+Relay/node_modules/
+Relay/.dev.vars
+Relay/.secrets/
+Relay/*service-account*.json
+Relay/*private*.pem
+Android/.android-user/
+Android/.gradle-home/
+Android/.sdk/
+Android/.tools/
+Android/*.apk
+
+.wrangler/

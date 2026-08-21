@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "type": "transport",
+  "event": "offline",
+  "hostId": "host_demo",
+  "deviceId": "device_demo",
+  "sequence": 43,
+  "observedAt": "2026-08-20T14:42:18+08:00",
+  "timeoutSeconds": 600,
+  "reason": "heartbeat_timeout",
+  "signature": "q3NeBlLO3op_NFvvdFnhqZh3hXtlgxg0TG75x5s7JoJEohvmPiO4mCvWyblrL4EHNV4TeOvcbuE-tm-qrSbKDw"
+}

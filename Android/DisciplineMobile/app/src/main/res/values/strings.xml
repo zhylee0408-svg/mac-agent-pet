@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Discipline</string>
+    <string name="notification_channel_status">Status updates</string>
+    <string name="notification_channel_status_description">Silent running, idle, source, and offline status updates</string>
+    <string name="notification_channel_alerts">Attention alerts</string>
+    <string name="notification_channel_alerts_description">One sound for ready, needs input, and blocked states; vibration is disabled</string>
+</resources>

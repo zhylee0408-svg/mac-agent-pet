@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://discipline.local/schemas/envelope-v1.schema.json",
+  "title": "Discipline encrypted state envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "algorithm",
+    "hostId",
+    "deviceId",
+    "keyId",
+    "sequence",
+    "sentAt",
+    "nonce",
+    "ciphertext"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "algorithm": { "const": "X25519-HKDF-SHA256-A256GCM" },
+    "hostId": { "$ref": "#/$defs/id" },
+    "deviceId": { "$ref": "#/$defs/id" },
+    "keyId": { "$ref": "#/$defs/id" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "sentAt": { "type": "string", "format": "date-time" },
+    "nonce": { "$ref": "#/$defs/base64url" },
+    "ciphertext": { "$ref": "#/$defs/base64url" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,80}$"
+    },
+    "base64url": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}

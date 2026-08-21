@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "type": "pairing_claim",
+  "pairingId": "pairing_demo",
+  "oneTimeToken": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "deviceId": "device_demo",
+  "deviceName": "OnePlus 13T",
+  "devicePublicKey": "WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns",
+  "fcmToken": "fcm_demo_token_for_protocol_fixture"
+}

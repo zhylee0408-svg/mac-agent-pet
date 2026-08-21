@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "323824115645",
+    "project_id": "discipline-mobile",
+    "storage_bucket": "discipline-mobile.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:323824115645:android:0b276e371f260f9be43cd4",
+        "android_client_info": {
+          "package_name": "com.zhylee.discipline.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCBsSo5e2RI_IS4OdLsUXE144SwNVtDWrU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

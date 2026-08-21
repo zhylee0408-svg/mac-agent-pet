@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "type": "pairing_claimed",
+  "pairingId": "pairing_demo",
+  "deviceId": "device_demo",
+  "deviceName": "OnePlus 13T",
+  "devicePublicKey": "WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns",
+  "keyId": "key_demo",
+  "claimedAt": "2026-08-20T14:33:18+08:00"
+}

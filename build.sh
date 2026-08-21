@@ -15,7 +15,10 @@ CLANG_MODULE_CACHE_PATH="$BUILD_ROOT/module-cache" xcrun swiftc \
   -target arm64-apple-macosx13.0 \
   -module-cache-path "$BUILD_ROOT/module-cache" \
   -framework AppKit \
+  -framework CryptoKit \
+  -framework Security \
   -framework WebKit \
+  "$SCRIPT_DIR/Sources/Discipline/MobileSync.swift" \
   "$SCRIPT_DIR/Sources/Discipline/main.swift" \
   -o "$CONTENTS/MacOS/Discipline"
 

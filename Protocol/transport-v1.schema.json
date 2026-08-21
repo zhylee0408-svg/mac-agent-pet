@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://discipline.local/schemas/transport-v1.schema.json",
+  "title": "Discipline signed transport event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "type",
+    "event",
+    "hostId",
+    "deviceId",
+    "sequence",
+    "observedAt",
+    "timeoutSeconds",
+    "reason",
+    "signature"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "type": { "const": "transport" },
+    "event": { "const": "offline" },
+    "hostId": { "$ref": "#/$defs/id" },
+    "deviceId": { "$ref": "#/$defs/id" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "timeoutSeconds": { "const": 600 },
+    "reason": { "const": "heartbeat_timeout" },
+    "signature": { "$ref": "#/$defs/base64url" }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,80}$"
+    },
+    "base64url": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}

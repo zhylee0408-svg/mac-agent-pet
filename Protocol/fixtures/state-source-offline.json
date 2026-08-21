@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "type": "state",
+  "sequence": 47,
+  "source": "dsh",
+  "status": "idle",
+  "sources": [
+    {
+      "id": "codex",
+      "label": "Codex",
+      "online": false,
+      "status": null
+    },
+    {
+      "id": "dsh",
+      "label": "DSH",
+      "online": true,
+      "status": "idle"
+    }
+  ],
+  "updatedAt": "2026-08-20T15:10:05+08:00"
+}

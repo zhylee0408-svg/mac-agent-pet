@@ -1,0 +1,23 @@
+{
+  "aad": "discipline:v1:host_demo:device_demo:42:key_demo",
+  "ciphertext": "2wqVezWYBuX4MU1yQ8RTAmoWSDCVBxn48oLsfFnibgUBjSB_V6gMiGy3nML68TG367cxx5MHC42oxZTES-Cxms55OwDn8aoWD-8VP77zHMLvx-z-DbB6FD141SihuuZRhsybXiU10lc8hLnWRMluvr7RjgDhyTkdpEDzJ8pD62dU0a1vmd8gvh03KM527c5tNPrMiswQpYeT2y8pDvFQnjhh-ROayJvcrBqmK91nLbzfM12oC58PnLonvi4aiXfxP4WrWIQ-fKp2PPm0MOb28IUBUlRm4TDeBbO7rZ9vn92RtDPhG__fEE1pxn4NxcpeeWKlB0ZaPlSpIe2uaLrbX2LRFdgdYyUPOtqa",
+  "derivedKey": "Q8UN-Y0Mk4y3dA44I8MLOoRNK0h36ZwfYMkrYsEph8c",
+  "deviceId": "device_demo",
+  "devicePrivateKey": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+  "devicePublicKey": "WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns",
+  "hostId": "host_demo",
+  "hostPrivateKey": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+  "hostPublicKey": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw",
+  "kdfSalt": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
+  "keyId": "key_demo",
+  "nonce": "oKGio6Slpqeoqaqr",
+  "plaintext": "{\"version\":1,\"type\":\"state\",\"sequence\":42,\"source\":\"codex\",\"status\":\"running\",\"sources\":[{\"id\":\"codex\",\"label\":\"Codex\",\"online\":true,\"status\":\"running\"},{\"id\":\"dsh\",\"label\":\"DSH\",\"online\":true,\"status\":\"idle\"}],\"updatedAt\":\"2026-08-20T14:32:18+08:00\"}",
+  "relaySigningPrivateKey": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+  "relaySigningPublicKey": "rcFAEfgtHFbZVqpPnXPYhYNhpgYEhSXg0Ixjjcdd2Mc",
+  "sequence": 42,
+  "sharedInfo": "discipline-mobile-state-v1",
+  "sharedSecret": "qE3Hw8jwWLGy3EzR6bXcCnmH-ItqlWTN4zkfxCEVnnc",
+  "transportSignature": "q3NeBlLO3op_NFvvdFnhqZh3hXtlgxg0TG75x5s7JoJEohvmPiO4mCvWyblrL4EHNV4TeOvcbuE-tm-qrSbKDw",
+  "transportSigningInput": "discipline:v1:transport:host_demo:device_demo:43:offline:2026-08-20T14:42:18+08:00:600",
+  "version": 1
+}

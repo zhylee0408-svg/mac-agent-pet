@@ -1395,6 +1395,7 @@ final class DSHStatusMonitor {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var panel: PetPanel!
     private var renderer: PetRenderer!
@@ -1405,6 +1406,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var stateMenuItem: NSMenuItem!
     private var detailMenuItem: NSMenuItem!
     private var bridgeMenuItem: NSMenuItem!
+    private var mobileStatusMenuItem: NSMenuItem!
+    private var mobileCopyPairingMenuItem: NSMenuItem!
+    private var mobileRevokeMenuItem: NSMenuItem!
+    private var mobileSync: MobileSyncCoordinator!
     private var liveState: PetState = .idle
     private var liveDetail = "Starting status bridge…"
     private var liveSource = "DSH"
@@ -1426,6 +1431,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         NSApp.setActivationPolicy(.accessory)
         makePanel()
         makeStatusMenu()
+        mobileSync = MobileSyncCoordinator { [weak self] status in
+            self?.mobileStatusMenuItem.title = status
+        }
+        mobileSync.start()
 
         let socket = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/ipc/ipc.sock", isDirectory: false)
@@ -1458,6 +1467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func applicationWillTerminate(_ notification: Notification) {
         stateRefreshWorkItem?.cancel()
+        mobileSync?.stop()
         monitor?.stop()
         ipcMonitor?.stop()
         dshMonitor?.stop()
@@ -1545,6 +1555,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         preview.submenu = previewMenu
         menu.addItem(preview)
 
+        let mobile = NSMenuItem(title: "Mobile sync", action: nil, keyEquivalent: "")
+        let mobileMenu = NSMenu(title: "Mobile sync")
+        mobileStatusMenuItem = NSMenuItem(title: "Mobile: Starting…", action: nil, keyEquivalent: "")
+        mobileStatusMenuItem.isEnabled = false
+        mobileMenu.addItem(mobileStatusMenuItem)
+        mobileMenu.addItem(.separator())
+        let copyPairing = NSMenuItem(
+            title: "Copy pairing code",
+            action: #selector(copyMobilePairingCode),
+            keyEquivalent: ""
+        )
+        copyPairing.target = self
+        mobileCopyPairingMenuItem = copyPairing
+        mobileMenu.addItem(copyPairing)
+        let revoke = NSMenuItem(
+            title: "Revoke phone access…",
+            action: #selector(revokeMobileAccess),
+            keyEquivalent: ""
+        )
+        revoke.target = self
+        mobileRevokeMenuItem = revoke
+        mobileMenu.addItem(revoke)
+        mobile.submenu = mobileMenu
+        menu.addItem(mobile)
+
         menu.addItem(NSMenuItem(title: "Show / Hide", action: #selector(togglePanel), keyEquivalent: ""))
 
         menu.addItem(.separator())
@@ -1624,6 +1659,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         let decision = sourceArbiter.select(from: candidates)
         scheduleStateRefresh(at: decision.nextRefreshAt)
+        mobileSync?.update(MobileProjectedState.make(
+            driver: decision.driver,
+            candidates: candidates
+        ))
 
         if let driver = decision.driver {
             liveState = driver.state
@@ -1732,6 +1771,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        let mobilePaired = mobileSync?.isPaired == true
+        mobileCopyPairingMenuItem?.isEnabled = !mobilePaired
+        mobileRevokeMenuItem?.isEnabled = mobilePaired
         if previewWorkItem == nil {
             sourceMenuItem.title = liveSource
             stateMenuItem.title = "State: \(liveState.displayName)"
@@ -1828,7 +1870,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         }
     }
 
-    private func isDSHReachable() -> Bool {
+    nonisolated private func isDSHReachable() -> Bool {
         let fd = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { Darwin.close(fd) }
@@ -1864,12 +1906,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: item)
     }
 
+    @objc private func copyMobilePairingCode() {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let code = try await self.mobileSync.createPairingCode()
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+                pasteboard.setString(code, forType: .string)
+                let alert = NSAlert()
+                alert.messageText = "Pairing code copied"
+                alert.informativeText = "Paste it into Discipline on Android, then tap Connect. The code expires in five minutes."
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            } catch {
+                self.showMobileError(error)
+            }
+        }
+    }
+
+    @objc private func revokeMobileAccess() {
+        let alert = NSAlert()
+        alert.messageText = "Revoke phone access?"
+        alert.informativeText = "The paired phone will stop receiving status updates and must be paired again."
+        alert.addButton(withTitle: "Revoke")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.mobileSync.revoke()
+            } catch {
+                self.showMobileError(error)
+            }
+        }
+    }
+
+    private func showMobileError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Mobile sync"
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
 }
 
 private func runSelfTests() -> Bool {
+    guard runMobileSyncSelfTests() else { return false }
     var state = SessionFileState()
     state.modificationDate = Date()
 
@@ -2096,6 +2184,6 @@ if CommandLine.arguments.contains("--self-test") {
 }
 
 let application = NSApplication.shared
-let delegate = AppDelegate()
+let delegate = MainActor.assumeIsolated { AppDelegate() }
 application.delegate = delegate
 application.run()

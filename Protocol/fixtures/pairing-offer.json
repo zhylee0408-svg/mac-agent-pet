@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "type": "pairing_offer",
+  "relayUrl": "https://relay.discipline.example",
+  "pairingId": "pairing_demo",
+  "oneTimeToken": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "hostId": "host_demo",
+  "hostName": "Zhy's MacBook Pro",
+  "hostPublicKey": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw",
+  "kdfSalt": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A",
+  "relaySigningPublicKey": "rcFAEfgtHFbZVqpPnXPYhYNhpgYEhSXg0Ixjjcdd2Mc",
+  "expiresAt": "2026-08-20T14:37:18+08:00"
+}

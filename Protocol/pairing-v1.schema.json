@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://discipline.local/schemas/pairing-v1.schema.json",
+  "title": "Discipline pairing messages v1",
+  "oneOf": [
+    { "$ref": "#/$defs/offer" },
+    { "$ref": "#/$defs/claim" },
+    { "$ref": "#/$defs/claimed" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,80}$"
+    },
+    "base64url": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "offer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "type",
+        "relayUrl",
+        "pairingId",
+        "oneTimeToken",
+        "hostId",
+        "hostName",
+        "hostPublicKey",
+        "kdfSalt",
+        "relaySigningPublicKey",
+        "expiresAt"
+      ],
+      "properties": {
+        "version": { "const": 1 },
+        "type": { "const": "pairing_offer" },
+        "relayUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "pairingId": { "$ref": "#/$defs/id" },
+        "oneTimeToken": { "$ref": "#/$defs/base64url" },
+        "hostId": { "$ref": "#/$defs/id" },
+        "hostName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "hostPublicKey": { "$ref": "#/$defs/base64url" },
+        "kdfSalt": { "$ref": "#/$defs/base64url" },
+        "relaySigningPublicKey": { "$ref": "#/$defs/base64url" },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "type",
+        "pairingId",
+        "oneTimeToken",
+        "deviceId",
+        "deviceName",
+        "devicePublicKey",
+        "fcmToken"
+      ],
+      "properties": {
+        "version": { "const": 1 },
+        "type": { "const": "pairing_claim" },
+        "pairingId": { "$ref": "#/$defs/id" },
+        "oneTimeToken": { "$ref": "#/$defs/base64url" },
+        "deviceId": { "$ref": "#/$defs/id" },
+        "deviceName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "devicePublicKey": { "$ref": "#/$defs/base64url" },
+        "fcmToken": { "type": "string", "minLength": 16, "maxLength": 4096 }
+      }
+    },
+    "claimed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "type",
+        "pairingId",
+        "deviceId",
+        "deviceName",
+        "devicePublicKey",
+        "keyId",
+        "claimedAt"
+      ],
+      "properties": {
+        "version": { "const": 1 },
+        "type": { "const": "pairing_claimed" },
+        "pairingId": { "$ref": "#/$defs/id" },
+        "deviceId": { "$ref": "#/$defs/id" },
+        "deviceName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "devicePublicKey": { "$ref": "#/$defs/base64url" },
+        "keyId": { "$ref": "#/$defs/id" },
+        "claimedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

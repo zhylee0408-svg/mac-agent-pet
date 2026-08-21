@@ -1,0 +1,24 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:left="17dp"
+        android:top="17dp"
+        android:right="17dp"
+        android:bottom="17dp">
+        <shape android:shape="oval">
+            <solid android:color="#00000000" />
+            <stroke
+                android:width="2.7dp"
+                android:color="#FFF1F4F8" />
+        </shape>
+    </item>
+    <item
+        android:left="21dp"
+        android:top="21dp"
+        android:right="21dp"
+        android:bottom="21dp">
+        <bitmap
+            android:src="@drawable/discipline_pet_weave"
+            android:gravity="fill"
+            android:tint="#FFF1F4F8" />
+    </item>
+</layer-list>

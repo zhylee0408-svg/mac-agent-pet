@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "algorithm": "X25519-HKDF-SHA256-A256GCM",
+  "hostId": "host_demo",
+  "deviceId": "device_demo",
+  "keyId": "key_demo",
+  "sequence": 42,
+  "sentAt": "2026-08-20T14:32:18+08:00",
+  "nonce": "oKGio6Slpqeoqaqr",
+  "ciphertext": "2wqVezWYBuX4MU1yQ8RTAmoWSDCVBxn48oLsfFnibgUBjSB_V6gMiGy3nML68TG367cxx5MHC42oxZTES-Cxms55OwDn8aoWD-8VP77zHMLvx-z-DbB6FD141SihuuZRhsybXiU10lc8hLnWRMluvr7RjgDhyTkdpEDzJ8pD62dU0a1vmd8gvh03KM527c5tNPrMiswQpYeT2y8pDvFQnjhh-ROayJvcrBqmK91nLbzfM12oC58PnLonvi4aiXfxP4WrWIQ-fKp2PPm0MOb28IUBUlRm4TDeBbO7rZ9vn92RtDPhG__fEE1pxn4NxcpeeWKlB0ZaPlSpIe2uaLrbX2LRFdgdYyUPOtqa"
+}
