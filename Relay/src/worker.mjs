@@ -155,6 +155,19 @@ export function createWorker({ fetchImpl = fetch, logger = console } = {}) {
     }
 
     if (
+      request.method === "GET"
+      && segments.length === 4
+      && segments[0] === "v1"
+      && segments[1] === "devices"
+      && segments[3] === "latest"
+    ) {
+      return json(await relay.latestEnvelope({
+        deviceId: segments[2],
+        deviceAccessToken: bearerToken(request),
+      }));
+    }
+
+    if (
       request.method === "PUT"
       && segments.length === 4
       && segments[0] === "v1"

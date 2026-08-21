@@ -207,6 +207,16 @@ assert.equal(fcmRequests.length, 2);
 assert.equal(fcmRequests[0].message.data.kind, "state");
 assert.deepEqual(JSON.parse(fcmRequests[0].message.data.payload), envelope);
 
+// 拉取制：GET /v1/devices/:id/latest 应返回最新已提交的 envelope（sequence 43）。
+const latest = await responseJSON(
+  await worker.fetch(request("GET", `/v1/devices/${claim.deviceId}/latest`, { token: deviceAccessToken }), environment),
+  200,
+);
+assert.equal(latest.sequence, 43);
+assert.equal(latest.deviceId, claim.deviceId);
+assert.equal(latest.hostId, envelope.hostId);
+assert.equal(latest.keyId, envelope.keyId);
+
 nowMs = Date.parse("2026-08-20T14:42:19+08:00");
 assert.deepEqual(await worker.scheduled({ scheduledTime: nowMs }, environment), { sent: 1, failed: 0 });
 assert.equal(fcmRequests.length, 3);

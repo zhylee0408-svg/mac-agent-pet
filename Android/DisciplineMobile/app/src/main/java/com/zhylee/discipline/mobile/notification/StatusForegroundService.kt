@@ -9,6 +9,7 @@ import androidx.core.app.ServiceCompat
 import com.zhylee.discipline.mobile.DisciplineApplication
 import com.zhylee.discipline.mobile.model.DisciplineSnapshot
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -16,10 +17,13 @@ import kotlinx.coroutines.launch
  *
  * - 启动时用当前快照 startForeground（特殊用途类型，Android 15 无 6 小时限制）。
  * - 订阅 repository.snapshot，每次状态变化都重新 startForeground → 后台自动换灯。
+ * - 每 5 秒向中继「拉」最新状态（拉取制，绕开 ColorOS 的 FCM 后台不投递问题），
+ *   拉到的 envelope 走与 FCM 相同的解密/去重/更新路径。
  * - 通知 ID 与普通状态通知相同（4101），前台通知即状态红绿灯。
  */
 class StatusForegroundService : Service() {
   private var collectionJob: Job? = null
+  private var pollJob: Job? = null
   private val notifications by lazy { StatusNotificationManager(this) }
 
   override fun onBind(intent: Intent?): IBinder? = null
@@ -33,6 +37,15 @@ class StatusForegroundService : Service() {
         startForegroundStatus(snapshot)
       }
     }
+    pollJob = app.applicationScope.launch {
+      while (true) {
+        runCatching {
+          val payload = app.pairingManager.fetchLatestState()
+          if (payload != null) app.incomingMessages.process("state", payload)
+        }
+        delay(5_000)
+      }
+    }
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -43,6 +56,7 @@ class StatusForegroundService : Service() {
 
   override fun onDestroy() {
     collectionJob?.cancel()
+    pollJob?.cancel()
     super.onDestroy()
   }
 

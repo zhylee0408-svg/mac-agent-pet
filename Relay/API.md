@@ -13,6 +13,7 @@ Authenticated routes use an unpadded base64url bearer token containing at least
 | `GET` | `/v1/pairings/:pairingId?hostId=:hostId` | host token | `pending`, `expired`, `claimed`, or `removed` |
 | `POST` | `/v1/pairings/:pairingId/claim` | device token | pairing claim → claimed result |
 | `POST` | `/v1/envelopes` | host token | encrypted envelope → accepted sequence |
+| `GET` | `/v1/devices/:deviceId/latest` | device token | 最新一条 state envelope（仅进程内内存，不落库）→ envelope JSON 或 404 |
 | `PUT` | `/v1/devices/:deviceId/push-token` | device token | `{ "fcmToken": "…" }` → updated route |
 | `DELETE` | `/v1/hosts/:hostId/devices/:deviceId` | host token | remove access from the Mac |
 | `DELETE` | `/v1/devices/:deviceId` | device token | unpair from Android |

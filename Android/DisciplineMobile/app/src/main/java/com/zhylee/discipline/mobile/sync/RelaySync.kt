@@ -60,6 +60,19 @@ class RelayClient {
     if (!decode<RelayConfirmation>(response).removed) throw PairingException("Phone was not unpaired")
   }
 
+  /** 拉取制：取中继内存里最新一条状态 envelope 的 JSON（无则返回 null）。 */
+  fun fetchLatest(configuration: PairedConfiguration): String? {
+    return runCatching {
+      request(
+        configuration.relayUrl,
+        "v1/devices/${configuration.deviceId}/latest",
+        "GET",
+        configuration.deviceAccessToken,
+        null,
+      )
+    }.getOrNull()
+  }
+
   private fun request(base: String, path: String, method: String, token: String, body: String?): String {
     val baseURI = URI(base)
     if (baseURI.scheme != "https") throw PairingException("Relay must use HTTPS")
@@ -184,6 +197,12 @@ class PairingManager(
   suspend fun updatePushToken(token: String) = withContext(Dispatchers.IO) {
     val configuration = pairingStore.load() ?: return@withContext
     relay.updatePushToken(configuration, token)
+  }
+
+  /** 拉取制：向中继拉最新状态 envelope（无配置/失败返回 null）。 */
+  suspend fun fetchLatestState(): String? = withContext(Dispatchers.IO) {
+    val configuration = pairingStore.load() ?: return@withContext null
+    relay.fetchLatest(configuration)
   }
 }
 
